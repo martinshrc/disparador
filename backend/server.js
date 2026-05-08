@@ -9,6 +9,7 @@
  */
 
 import express from 'express';
+import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import pg from 'pg';
 import { readFileSync, existsSync } from 'fs';
@@ -60,21 +61,21 @@ const db = new Pool({
 const app = express();
 app.set('trust proxy', 1);
 
-// CORS — restringe a origens conhecidas
+// CORS
 const ALLOWED_ORIGINS = (cfg('ALLOWED_ORIGINS') || 'http://localhost:8080')
   .split(',')
   .map((s) => s.trim());
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (!origin || ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin || '*');
-  }
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error('CORS: origem não permitida'));
+  },
+  allowedHeaders: ['Content-Type', 'x-api-key'],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  preflightContinue: false,
+  optionsSuccessStatus: 200,
+}));
 
 // Rate limit — 100 req/min por IP
 const limiter = rateLimit({

@@ -9,8 +9,12 @@
   },
   "dependencies": {
     "@cnpja/sdk": "^1.8.1",
+    "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.1",
     "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19"
   }
 }
