@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
-import { RefreshCw, ArrowUpDown, ChevronLeft, ChevronRight, RotateCcw, Trash2 } from 'lucide-react';
+import { RefreshCw, ArrowUpDown, ChevronLeft, ChevronRight, RotateCcw, Trash2, Search } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { StatusBadge } from './StatusBadge';
 import { ContactRow } from '@/types/dispatcher';
 import { cn } from '@/lib/utils';
@@ -43,12 +44,21 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, isRunni
   const [currentPage, setCurrentPage] = useState(1);
   const [sortByStatus, setSortByStatus] = useState(false);
   const [filter, setFilter] = useState<FilterType>('todos');
+  const [search, setSearch] = useState('');
 
   const filteredContacts = useMemo(() => {
-    if (filter === 'primeiro') return contacts.filter(c => !c.jaEnviou && c.status !== 'sucesso');
-    if (filter === 'ja-enviou') return contacts.filter(c => c.jaEnviou || c.status === 'sucesso');
-    return contacts;
-  }, [contacts, filter]);
+    let result = contacts;
+    if (filter === 'primeiro') result = result.filter(c => !c.jaEnviou && c.status !== 'sucesso');
+    if (filter === 'ja-enviou') result = result.filter(c => c.jaEnviou || c.status === 'sucesso');
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter(c =>
+        c.empresa.toLowerCase().includes(q) ||
+        c.telefoneFormatado.includes(q)
+      );
+    }
+    return result;
+  }, [contacts, filter, search]);
 
   const sortedContacts = useMemo(() => {
     if (!sortByStatus) return filteredContacts;
@@ -92,34 +102,45 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, isRunni
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         {/* Filtros */}
-        <div className="flex items-center gap-1.5">
-          <Button
-            variant={filter === 'todos' ? 'default' : 'outline'}
-            size="sm"
-            className="h-7 text-xs"
-            onClick={() => handleFilterChange('todos')}
-          >
-            Todos
-            <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{contacts.length}</Badge>
-          </Button>
-          <Button
-            variant={filter === 'primeiro' ? 'default' : 'outline'}
-            size="sm"
-            className="h-7 text-xs"
-            onClick={() => handleFilterChange('primeiro')}
-          >
-            Primeiro contato
-            <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{countPrimeiro}</Badge>
-          </Button>
-          <Button
-            variant={filter === 'ja-enviou' ? 'default' : 'outline'}
-            size="sm"
-            className="h-7 text-xs"
-            onClick={() => handleFilterChange('ja-enviou')}
-          >
-            Já enviou
-            <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{countJaEnviou}</Badge>
-          </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Buscar empresa ou telefone..."
+              className="pl-7 h-7 text-xs w-52"
+              value={search}
+              onChange={e => { setSearch(e.target.value); setCurrentPage(1); }}
+            />
+          </div>
+          <div className="flex items-center gap-1">
+            <Button
+              variant={filter === 'todos' ? 'default' : 'outline'}
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => handleFilterChange('todos')}
+            >
+              Todos
+              <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{contacts.length}</Badge>
+            </Button>
+            <Button
+              variant={filter === 'primeiro' ? 'default' : 'outline'}
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => handleFilterChange('primeiro')}
+            >
+              Primeiro contato
+              <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{countPrimeiro}</Badge>
+            </Button>
+            <Button
+              variant={filter === 'ja-enviou' ? 'default' : 'outline'}
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => handleFilterChange('ja-enviou')}
+            >
+              Já enviou
+              <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{countJaEnviou}</Badge>
+            </Button>
+          </div>
         </div>
 
         <AlertDialog>
