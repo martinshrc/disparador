@@ -87,11 +87,11 @@ const limiter = rateLimit({
 });
 app.use('/api', limiter);
 
-// API Key — rejeita requests sem a chave correta
+// API Key — aceita via header x-api-key ou query param ?apikey=
 const BACKEND_API_KEY = cfg('BACKEND_API_KEY');
 app.use('/api', (req, res, next) => {
-  if (!BACKEND_API_KEY) return next(); // sem chave configurada: passa (dev sem .env)
-  const key = req.headers['x-api-key'];
+  if (!BACKEND_API_KEY) return next();
+  const key = req.headers['x-api-key'] || req.query.apikey;
   if (key !== BACKEND_API_KEY) return res.status(401).json({ error: 'Não autorizado.' });
   next();
 });
