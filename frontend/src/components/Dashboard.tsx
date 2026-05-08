@@ -501,7 +501,7 @@ export function Dashboard() {
                   <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
                     <li>Conecte seu WhatsApp (card ao lado)</li>
                     <li>Configure a IA (botão &quot;IA&quot; no topo)</li>
-                    <li>Envie a planilha com Empresa e Telefone ou use <Link to="/coletar-leads" className="text-primary hover:underline font-medium">Coletar leads</Link> (Google Maps)</li>
+                    <li>Envie a planilha com Empresa e Telefone ou use <Link to="/coletar-leads" className="text-primary hover:underline font-medium">Coletar leads</Link></li>
                     <li>Escreva a mensagem base</li>
                     <li>Clique em &quot;Iniciar disparos&quot; no painel ao lado</li>
                   </ol>
@@ -541,12 +541,11 @@ export function Dashboard() {
                     <span className="ml-auto text-muted-foreground text-sm">{history.length}</span>
                   </Button>
                   <Button
-                    variant="outline"
-                    className="w-full justify-start gap-2"
+                    className="w-full justify-start gap-2 gradient-primary shadow-glow hover:shadow-lg transition-all"
                     onClick={() => navigate('/coletar-leads')}
                   >
                     <Search className="h-4 w-4" />
-                    Coletar leads (Google Maps)
+                    Coletar leads
                   </Button>
                 </CardContent>
               </Card>

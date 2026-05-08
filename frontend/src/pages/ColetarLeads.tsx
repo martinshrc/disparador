@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   ArrowLeft, Search, RefreshCw, Building2,
   Phone, Mail, MapPin, Zap, Database, ChevronLeft, ChevronRight,
-  SendHorizontal, CheckSquare, Square,
+  SendHorizontal, ChevronsUpDown, Check,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,6 +14,13 @@ import {
   Select, SelectContent, SelectGroup, SelectItem,
   SelectLabel, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import {
+  Popover, PopoverContent, PopoverTrigger,
+} from '@/components/ui/popover';
+import {
+  Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
+} from '@/components/ui/command';
+import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { CNAES, CNAE_CATEGORIES, ESTADOS } from '@/data/cnaes';
 import { useAuth } from '@/hooks/useAuth';
@@ -76,6 +83,7 @@ export default function ColetarLeads() {
   // Filters
   const [selectedCnae, setSelectedCnae] = useState<string>('');
   const [selectedEstado, setSelectedEstado] = useState<string>('');
+  const [cnaePopoverOpen, setCnaePopoverOpen] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [limite, setLimite] = useState(20);
 
@@ -319,26 +327,51 @@ export default function ColetarLeads() {
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap gap-3">
-            {/* Segmento */}
+            {/* Segmento — combobox com busca */}
             <div className="flex-1 min-w-[200px]">
               <label className="text-xs text-muted-foreground mb-1 block">Segmento</label>
-              <Select value={selectedCnae} onValueChange={setSelectedCnae}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione o segmento..." />
-                </SelectTrigger>
-                <SelectContent className="max-h-72">
-                  {CNAE_CATEGORIES.map(cat => (
-                    <SelectGroup key={cat}>
-                      <SelectLabel>{cat}</SelectLabel>
-                      {CNAES.filter(c => c.category === cat).map(c => (
-                        <SelectItem key={c.id} value={String(c.id)}>
-                          {c.label}
-                        </SelectItem>
+              <Popover open={cnaePopoverOpen} onOpenChange={setCnaePopoverOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={cnaePopoverOpen}
+                    className="w-full justify-between font-normal"
+                  >
+                    <span className="truncate">
+                      {selectedCnae
+                        ? CNAES.find(c => String(c.id) === selectedCnae)?.label ?? 'Segmento...'
+                        : 'Selecione o segmento...'}
+                    </span>
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[340px] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder="Buscar segmento..." />
+                    <CommandList className="max-h-72">
+                      <CommandEmpty>Nenhum segmento encontrado.</CommandEmpty>
+                      {CNAE_CATEGORIES.map(cat => (
+                        <CommandGroup key={cat} heading={cat}>
+                          {CNAES.filter(c => c.category === cat).map(c => (
+                            <CommandItem
+                              key={c.id}
+                              value={`${c.label} ${c.id}`}
+                              onSelect={() => {
+                                setSelectedCnae(String(c.id));
+                                setCnaePopoverOpen(false);
+                              }}
+                            >
+                              <Check className={cn('mr-2 h-4 w-4', selectedCnae === String(c.id) ? 'opacity-100' : 'opacity-0')} />
+                              {c.label}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
                       ))}
-                    </SelectGroup>
-                  ))}
-                </SelectContent>
-              </Select>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
 
             {/* Estado */}
