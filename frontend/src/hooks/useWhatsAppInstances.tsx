@@ -50,10 +50,11 @@ export function useWhatsAppInstances() {
   useEffect(() => {
     if (!user) return;
     const channel = supabase
-      .channel('whatsapp_instances')
+      .channel(`whatsapp_instances_${user.id}_${Date.now()}`)
       .on(
         'postgres_changes',
         {
+          event: '*',
           schema: 'public',
           table: 'whatsapp_instances',
           filter: `user_id=eq.${user.id}`,
