@@ -1,0 +1,16 @@
+{
+  "name": "blitzar-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "setup-db": "node scripts/setup_db.js",
+    "fetch-leads": "node scripts/fetch_leads.js"
+  },
+  "dependencies": {
+    "@cnpja/sdk": "^1.8.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.1",
+    "pg": "^8.20.0"
+  }
+}

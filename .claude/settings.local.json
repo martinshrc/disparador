@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "WebFetch(domain:cnpja.com)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.cnpja.com)",
+      "WebFetch(domain:www.postman.com)",
+      "WebFetch(domain:www.cpfcnpj.com.br)",
+      "WebFetch(domain:zylalabs.com)",
+      "WebFetch(domain:opencnpj.org)",
+      "WebFetch(domain:nfe.io)",
+      "Bash(psql --version)",
+      "WebFetch(domain:docs.cnpj.ws)",
+      "WebFetch(domain:www.gov.br)",
+      "Bash(xargs grep:*)",
+      "Bash(taskkill /F /PID \\\\$!)",
+      "Bash(taskkill /F /IM node.exe)",
+      "Bash(node -e ':*)",
+      "Bash(mv \"C:/Users/heric/Desktop/Disparador versões/disparador-v2.1 \\(3\\)/disparador-v2.1 - ATUAL/dist\" \"C:/Users/heric/Desktop/Disparador versões/disparador-v2.1 \\(3\\)/disparador-v2.1 - ATUAL/dist_bak\")",
+      "Bash(mv \"C:/Users/heric/Desktop/Disparador versões/disparador-v2.1 \\(3\\)/disparador-v2.1 - ATUAL/dist_bak\" \"C:/Users/heric/Desktop/Disparador versões/disparador-v2.1 \\(3\\)/disparador-v2.1 - ATUAL/dist\")",
+      "Bash(cp -r src frontend/src)",
+      "Bash(cp -r public frontend/public)",
+      "Bash(cp -r supabase frontend/supabase)",
+      "Bash(cp index.html frontend/index.html)",
+      "Bash(cp vite.config.ts frontend/vite.config.ts)",
+      "Bash(PG_CONNECTION=\"postgres://invalid\" node server.js)",
+      "Bash(echo \"Server PID: $!\")",
+      "WebFetch(domain:api.github.com)",
+      "Bash(sed -i 's/e96f20c3fd08e51accbcdaa4136a8263/SUA_EVOLUTION_API_KEY_AQUI/g' \"docs/n8n/CONECTOR WHATSAPP.json\")",
+      "Bash(sed -i 's/429683C4C977415CAAFCCE10F7D57E11/SUA_EVOLUTION_API_KEY_AQUI/g' \"docs/n8n/ANALISE_CONECTOR_WHATSAPP.md\")"
+    ]
+  }
+}
