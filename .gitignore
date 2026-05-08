@@ -25,6 +25,9 @@ docs/
 *.md
 !README.md
 
+# Claude Code settings (podem conter histórico de comandos com credenciais)
+.claude/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
