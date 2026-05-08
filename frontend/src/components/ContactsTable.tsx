@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react';
-import { RefreshCw, ArrowUpDown, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
+import { RefreshCw, ArrowUpDown, ChevronLeft, ChevronRight, RotateCcw, Trash2 } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { StatusBadge } from './StatusBadge';
 import { ContactRow } from '@/types/dispatcher';
 import { cn } from '@/lib/utils';
@@ -27,22 +28,32 @@ const STATUS_ORDER: Record<string, number> = {
   erro: 4,
 };
 
+type FilterType = 'todos' | 'primeiro' | 'ja-enviou';
+
 interface ContactsTableProps {
   contacts: ContactRow[];
   onRetry: (id: string) => void;
   onRetryAll: () => void;
+  onRemove: (id: string) => void;
   isRunning: boolean;
   currentIndex: number;
 }
 
-export function ContactsTable({ contacts, onRetry, onRetryAll, isRunning, currentIndex }: ContactsTableProps) {
+export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, isRunning, currentIndex }: ContactsTableProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const [sortByStatus, setSortByStatus] = useState(false);
+  const [filter, setFilter] = useState<FilterType>('todos');
+
+  const filteredContacts = useMemo(() => {
+    if (filter === 'primeiro') return contacts.filter(c => !c.jaEnviou && c.status !== 'sucesso');
+    if (filter === 'ja-enviou') return contacts.filter(c => c.jaEnviou || c.status === 'sucesso');
+    return contacts;
+  }, [contacts, filter]);
 
   const sortedContacts = useMemo(() => {
-    if (!sortByStatus) return contacts;
-    return [...contacts].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]);
-  }, [contacts, sortByStatus]);
+    if (!sortByStatus) return filteredContacts;
+    return [...filteredContacts].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]);
+  }, [filteredContacts, sortByStatus]);
 
   const totalPages = Math.ceil(sortedContacts.length / ITEMS_PER_PAGE);
   const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
@@ -53,6 +64,14 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, isRunning, curren
     setSortByStatus(!sortByStatus);
     setCurrentPage(1);
   };
+
+  const handleFilterChange = (f: FilterType) => {
+    setFilter(f);
+    setCurrentPage(1);
+  };
+
+  const countPrimeiro = contacts.filter(c => !c.jaEnviou && c.status !== 'sucesso').length;
+  const countJaEnviou = contacts.filter(c => c.jaEnviou || c.status === 'sucesso').length;
 
   if (contacts.length === 0) {
     return (
@@ -70,17 +89,48 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, isRunning, curren
 
   return (
     <div className="space-y-4">
-      {/* Header with Retry All button */}
-      <div className="flex justify-end">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {/* Filtros */}
+        <div className="flex items-center gap-1.5">
+          <Button
+            variant={filter === 'todos' ? 'default' : 'outline'}
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => handleFilterChange('todos')}
+          >
+            Todos
+            <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{contacts.length}</Badge>
+          </Button>
+          <Button
+            variant={filter === 'primeiro' ? 'default' : 'outline'}
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => handleFilterChange('primeiro')}
+          >
+            Primeiro contato
+            <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{countPrimeiro}</Badge>
+          </Button>
+          <Button
+            variant={filter === 'ja-enviou' ? 'default' : 'outline'}
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => handleFilterChange('ja-enviou')}
+          >
+            Já enviou
+            <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{countJaEnviou}</Badge>
+          </Button>
+        </div>
+
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button
               variant="outline"
               size="sm"
               disabled={isRunning || contacts.length === 0}
-              className="gap-2"
+              className="gap-2 h-7 text-xs"
             >
-              <RotateCcw className="h-4 w-4" />
+              <RotateCcw className="h-3.5 w-3.5" />
               Reenviar Todos
             </Button>
           </AlertDialogTrigger>
@@ -88,15 +138,13 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, isRunning, curren
             <AlertDialogHeader>
               <AlertDialogTitle>Reenviar para todos os contatos?</AlertDialogTitle>
               <AlertDialogDescription className="text-destructive">
-                Tem certeza que deseja reenviar para todos? Até para os que já foram enviados? 
+                Tem certeza que deseja reenviar para todos? Até para os que já foram enviados?
                 <strong className="block mt-2">Isso pode se caracterizar como spam.</strong>
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancelar</AlertDialogCancel>
-              <AlertDialogAction onClick={onRetryAll}>
-                Sim, reenviar todos
-              </AlertDialogAction>
+              <AlertDialogAction onClick={onRetryAll}>Sim, reenviar todos</AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
@@ -125,14 +173,14 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, isRunning, curren
                     <ArrowUpDown className="h-3.5 w-3.5" />
                   </Button>
                 </TableHead>
-                <TableHead className="w-[100px] text-right pr-4">Ação</TableHead>
+                <TableHead className="w-[140px] text-right pr-4">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {paginatedContacts.map((contact, index) => {
                 const realIndex = startIndex + index;
                 return (
-                  <TableRow 
+                  <TableRow
                     key={contact.id}
                     className={cn(
                       "transition-colors",
@@ -142,7 +190,14 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, isRunning, curren
                     <TableCell className="font-mono text-muted-foreground text-sm">
                       {realIndex + 1}
                     </TableCell>
-                    <TableCell className="font-medium">{contact.empresa}</TableCell>
+                    <TableCell className="font-medium">
+                      <div>
+                        {contact.empresa}
+                        {contact.jaEnviou && (
+                          <span className="ml-2 text-xs text-muted-foreground/60 font-normal">(já enviou)</span>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell className="font-mono text-sm">{contact.telefoneFormatado}</TableCell>
                     <TableCell className="max-w-[300px]">
                       {contact.mensagemIA ? (
@@ -157,16 +212,28 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, isRunning, curren
                       <StatusBadge status={contact.status} />
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => onRetry(contact.id)}
-                        disabled={isRunning || contact.status === 'pendente'}
-                        className="h-8 gap-1.5 text-xs"
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                        Reenviar
-                      </Button>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onRetry(contact.id)}
+                          disabled={isRunning || contact.status === 'pendente'}
+                          className="h-7 gap-1 text-xs px-2"
+                        >
+                          <RefreshCw className="h-3 w-3" />
+                          Reenviar
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onRemove(contact.id)}
+                          disabled={isRunning}
+                          className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                          title="Remover da fila"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
@@ -176,7 +243,7 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, isRunning, curren
         </div>
       </div>
 
-      {/* Pagination Controls */}
+      {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground">

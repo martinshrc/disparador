@@ -82,6 +82,7 @@ export function Dashboard() {
         telefoneFormatado: c.telefone,
         mensagemIA: c.ultima_mensagem ?? '',
         status: 'pendente' as const,
+        jaEnviou: !!c.ultima_mensagem_data,
       }));
       setContacts(asContactRows);
     }
@@ -349,6 +350,10 @@ export function Dashboard() {
       title: "Contatos resetados",
       description: "Todos os contatos foram marcados como pendentes."
     });
+  };
+
+  const handleRemove = (id: string) => {
+    setContacts(prev => prev.filter(c => c.id !== id));
   };
   const handleFileLoaded = async (newContacts: ContactRow[]) => {
     if (newContacts.length === 0) return;
@@ -718,7 +723,7 @@ export function Dashboard() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <ContactsTable contacts={contacts} onRetry={handleRetry} onRetryAll={handleRetryAll} isRunning={isRunning} currentIndex={currentIndex} />
+              <ContactsTable contacts={contacts} onRetry={handleRetry} onRetryAll={handleRetryAll} onRemove={handleRemove} isRunning={isRunning} currentIndex={currentIndex} />
             </CardContent>
           </Card>
         </section>

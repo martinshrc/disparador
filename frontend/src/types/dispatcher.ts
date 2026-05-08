@@ -6,6 +6,8 @@ export interface ContactRow {
   mensagemIA: string;
   status: 'pendente' | 'gerando-ia' | 'enviando' | 'sucesso' | 'erro';
   erro?: string;
+  /** true se já foi disparado em sessão anterior (ultima_mensagem_data preenchido no Supabase) */
+  jaEnviou?: boolean;
 }
 
 export interface DispatcherState {
