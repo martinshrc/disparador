@@ -113,13 +113,20 @@ export function useContacts() {
     if (!user) throw new DatabaseError('Usuário não autenticado');
     if (!contactsList?.length) return;
 
+    const seen = new Set<string>();
     const contactsToInsert = contactsList
       .filter(c => c.empresa && c.telefone)
       .map((c) => ({
         user_id: user.id,
         empresa: c.empresa.trim(),
         telefone: c.telefone.trim(),
-      }));
+      }))
+      .filter(c => {
+        const key = `${c.user_id}:${c.telefone}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
 
     if (contactsToInsert.length === 0) {
       throw new DatabaseError('Nenhum contato válido para salvar');
