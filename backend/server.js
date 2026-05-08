@@ -58,6 +58,7 @@ const db = new Pool({
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 const app = express();
+app.set('trust proxy', 1);
 
 // CORS — restringe a origens conhecidas
 const ALLOWED_ORIGINS = (cfg('ALLOWED_ORIGINS') || 'http://localhost:8080')
