@@ -476,7 +476,7 @@ export function Dashboard() {
                     const steps = [
                       { n: 1, label: 'WhatsApp', done: step1 },
                       { n: 2, label: 'IA', done: step2 },
-                      { n: 3, label: 'Planilha ou Coleta', done: step3 },
+                      { n: 3, label: 'Coletar Leads', done: step3 },
                       { n: 4, label: 'Mensagem', done: step4 },
                       { n: 5, label: 'Iniciar', done: false },
                     ];
@@ -506,7 +506,7 @@ export function Dashboard() {
                   <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
                     <li>Conecte seu WhatsApp (card ao lado)</li>
                     <li>Configure a IA (botão &quot;IA&quot; no topo)</li>
-                    <li>Envie a planilha com Empresa e Telefone ou use <Link to="/coletar-leads" className="text-primary hover:underline font-medium">Coletar leads</Link></li>
+                    <li>Use <Link to="/coletar-leads" className="text-primary hover:underline font-medium">Coletar leads</Link> para adicionar contatos</li>
                     <li>Escreva a mensagem base</li>
                     <li>Clique em &quot;Iniciar disparos&quot; no painel ao lado</li>
                   </ol>
@@ -554,11 +554,14 @@ export function Dashboard() {
                   </Button>
                 </CardContent>
               </Card>
-              <FileUpload
-                onFileLoaded={handleFileLoaded}
-                disabled={isRunning || savingContactsToProfile}
-                savingToProfile={savingContactsToProfile}
-              />
+              {/* HIBERNANDO: upload de planilha desativado temporariamente — reativar quando necessário */}
+              {false && (
+                <FileUpload
+                  onFileLoaded={handleFileLoaded}
+                  disabled={isRunning || savingContactsToProfile}
+                  savingToProfile={savingContactsToProfile}
+                />
+              )}
               <MessageConfig mensagemBase={mensagemBase} onMensagemChange={setMensagemBase} disabled={isRunning} />
             </div>
 
@@ -577,7 +580,7 @@ export function Dashboard() {
                           : !mensagemBase.trim()
                             ? 'Escreva uma mensagem base no card "Configuração da Mensagem" na configuração acima.'
                             : contacts.length === 0
-                              ? 'Adicione contatos pelo "Upload de Contatos" na configuração acima.'
+                              ? 'Adicione contatos via Coletar leads antes de disparar.'
                               : `Disparando pelo seu WhatsApp: ${dispatchInstanceName}`}
                     </CardDescription>
                   </div>
@@ -614,7 +617,7 @@ export function Dashboard() {
                       const missing: string[] = [];
                       if (!dispatchInstanceName) missing.push('Conecte um WhatsApp');
                       if (!mensagemBase.trim()) missing.push('Escreva uma mensagem base');
-                      if (contacts.length === 0) missing.push('Adicione contatos (upload)');
+                      if (contacts.length === 0) missing.push('Adicione contatos via Coletar leads');
                       const btn = (
                         <Button
                           size="lg"
@@ -718,8 +721,8 @@ export function Dashboard() {
               <CardTitle className="text-lg">Contatos na lista de disparo</CardTitle>
               <CardDescription>
                 {contacts.length > 0
-                  ? `${contacts.length} contatos carregados. Use o card "Upload de Contatos" acima para alterar.`
-                  : 'Use o card "Upload de Contatos" na configuração acima para adicionar contatos.'}
+                  ? `${contacts.length} contatos carregados.`
+                  : 'Use Coletar leads para adicionar contatos à lista de disparo.'}
               </CardDescription>
             </CardHeader>
             <CardContent>
