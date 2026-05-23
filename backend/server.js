@@ -1,8 +1,10 @@
 /**
- * backend/server.js — API de Leads
+ * backend/server.js — API de Leads + Disparo Batch Persistente
  *
- * Responsabilidade: ponte entre o frontend e o PostgreSQL VPS.
- * Somente dados de leads. Auth/contacts/dispatch continuam no Supabase.
+ * Responsabilidades:
+ *   - Ponte entre o frontend e o PostgreSQL VPS (leads pool)
+ *   - Gerenciamento de fila de disparo persistente (disparo_sessions + disparo_items)
+ *     O disparo roda no servidor: fechar o browser não interrompe o processo.
  *
  * Dev:  node server.js           (ou: npm start)
  * PRD:  variáveis via process.env (EasyPanel dashboard)
@@ -23,23 +25,40 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ─── Configuração ─────────────────────────────────────────────────────────────
 function loadEnv() {
-  // Procura .env na pasta do backend ou na raiz do projeto
-  const p = existsSync(resolve(__dirname, '.env'))
-    ? resolve(__dirname, '.env')
-    : resolve(__dirname, '../.env');
-  if (!existsSync(p)) return {};
   const env = {};
-  for (const line of readFileSync(p, 'utf8').split('\n')) {
-    const t = line.trim();
-    if (!t || t.startsWith('#')) continue;
-    const eq = t.indexOf('=');
-    if (eq === -1) continue;
-    env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
+
+  // Carrega root .env como base (VITE_* e outras variáveis compartilhadas)
+  const rootPath = resolve(__dirname, '../.env');
+  if (existsSync(rootPath)) {
+    for (const line of readFileSync(rootPath, 'utf8').split('\n')) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const eq = t.indexOf('=');
+      if (eq === -1) continue;
+      env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
+    }
   }
+
+  // Carrega backend/.env por cima (maior prioridade — sobrescreve root)
+  const backendPath = resolve(__dirname, '.env');
+  if (existsSync(backendPath)) {
+    for (const line of readFileSync(backendPath, 'utf8').split('\n')) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const eq = t.indexOf('=');
+      if (eq === -1) continue;
+      env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
+    }
+  }
+
   return env;
 }
 const ENV = loadEnv();
 const cfg = (k) => process.env[k] ?? ENV[k];
+
+// ─── N8N Webhook (lê backend/.env; fallback para VITE_ do root .env) ──────────
+const N8N_WEBHOOK_URL    = cfg('N8N_WEBHOOK_URL')    || cfg('VITE_N8N_WEBHOOK_URL');
+const N8N_WEBHOOK_SECRET = cfg('N8N_WEBHOOK_SECRET') || cfg('VITE_N8N_WEBHOOK_SECRET');
 
 const API_KEYS = [
   cfg('CNPJA_API_KEY_1'),
@@ -96,9 +115,11 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '5mb' })); // batch pode ter muitos contatos
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Helpers gerais ───────────────────────────────────────────────────────────
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function checkCredits(apiKey) {
   try {
     const sdk = new Cnpja({ apiKey });
@@ -169,6 +190,139 @@ async function saveOffice(office) {
     ]
   );
   return rowCount > 0;
+}
+
+// ─── Fila de Disparo Batch ────────────────────────────────────────────────────
+/**
+ * Map de abort controllers por sessionId.
+ * Permite cancelar uma sessão em andamento via POST /api/disparo/:id/cancel.
+ */
+const activeSessions = new Map(); // sessionId (string) → { aborted: boolean }
+
+/**
+ * Processa uma sessão de disparo de forma assíncrona (não-bloqueante).
+ * Chamado no POST /start e no startup (recovery de sessões interrompidas).
+ */
+async function processDisparoSession(sessionId, instanceName) {
+  const ctrl = { aborted: false };
+  activeSessions.set(sessionId, ctrl);
+
+  try {
+    while (!ctrl.aborted) {
+      // Pega o próximo item pendente, em ordem
+      const { rows } = await db.query(
+        `SELECT * FROM disparo_items
+         WHERE session_id = $1 AND status = 'pending'
+         ORDER BY position
+         LIMIT 1`,
+        [sessionId]
+      );
+
+      if (!rows.length) break; // fila vazia — sessão concluída
+
+      const item = rows[0];
+
+      // Marca como "enviando" para evitar reprocessamento em caso de crash parcial
+      await db.query(
+        `UPDATE disparo_items SET status = 'sending' WHERE id = $1`,
+        [item.id]
+      );
+
+      try {
+        if (!N8N_WEBHOOK_URL) throw new Error('N8N_WEBHOOK_URL não configurada no backend.');
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (N8N_WEBHOOK_SECRET) headers['x-webhook-secret'] = N8N_WEBHOOK_SECRET;
+
+        // AbortSignal com timeout de 30s (Node 17.3+)
+        const signal = AbortSignal.timeout ? AbortSignal.timeout(30000) : undefined;
+
+        const resp = await fetch(N8N_WEBHOOK_URL, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            Empresa:      item.empresa,
+            Telefone:     item.telefone,
+            Mensagem:     item.mensagem,
+            instanceName: instanceName,
+          }),
+          ...(signal ? { signal } : {}),
+        });
+
+        if (!resp.ok) {
+          const body = await resp.text().catch(() => '');
+          throw new Error(`HTTP ${resp.status}: ${body}`);
+        }
+
+        await db.query(
+          `UPDATE disparo_items SET status = 'sent', sent_at = NOW() WHERE id = $1`,
+          [item.id]
+        );
+        await db.query(
+          `UPDATE disparo_sessions SET sent = sent + 1, updated_at = NOW() WHERE id = $1`,
+          [sessionId]
+        );
+      } catch (err) {
+        await db.query(
+          `UPDATE disparo_items SET status = 'error', error_message = $2 WHERE id = $1`,
+          [item.id, String(err.message).slice(0, 500)]
+        );
+        await db.query(
+          `UPDATE disparo_sessions SET errors = errors + 1, updated_at = NOW() WHERE id = $1`,
+          [sessionId]
+        );
+      }
+
+      // Aguarda o intervalo definido por item antes do próximo envio
+      if (!ctrl.aborted) {
+        await sleep(item.intervalo_ms);
+      }
+    }
+  } catch (fatalErr) {
+    console.error(`[disparo] Erro fatal na sessão ${sessionId}:`, fatalErr);
+    await db.query(
+      `UPDATE disparo_sessions SET status = 'failed', updated_at = NOW() WHERE id = $1`,
+      [sessionId]
+    ).catch(() => {});
+    activeSessions.delete(sessionId);
+    return;
+  }
+
+  const finalStatus = ctrl.aborted ? 'cancelled' : 'completed';
+  await db.query(
+    `UPDATE disparo_sessions SET status = $2, updated_at = NOW() WHERE id = $1`,
+    [sessionId, finalStatus]
+  ).catch(() => {});
+
+  activeSessions.delete(sessionId);
+  console.log(`[disparo] Sessão ${sessionId} finalizada: ${finalStatus}`);
+}
+
+/**
+ * Retoma sessões que estavam em execução antes de um restart do servidor.
+ * Items em status 'sending' são resetados para 'pending' (envio pode ter sido
+ * interrompido no meio) antes de retomar o loop.
+ */
+async function resumePendingSessions() {
+  try {
+    // Reset de itens que ficaram presos em 'sending' no crash
+    await db.query(
+      `UPDATE disparo_items SET status = 'pending' WHERE status = 'sending'`
+    );
+
+    const { rows } = await db.query(
+      `SELECT id, instance_name FROM disparo_sessions WHERE status = 'running'`
+    );
+
+    if (rows.length > 0) {
+      console.log(`[disparo] Retomando ${rows.length} sessão(ões) pendente(s)...`);
+      for (const session of rows) {
+        processDisparoSession(session.id, session.instance_name).catch(console.error);
+      }
+    }
+  } catch (err) {
+    console.error('[disparo] Erro ao retomar sessões pendentes:', err);
+  }
 }
 
 // ─── GET /api/leads/credits ───────────────────────────────────────────────────
@@ -304,5 +458,153 @@ app.post('/api/leads/fetch', async (req, res) => {
   res.end();
 });
 
+// ─── POST /api/disparo/start ──────────────────────────────────────────────────
+/**
+ * Inicia um batch de disparo persistente.
+ * Body: { user_id, instance_name, mensagem_base, contacts: [{empresa, telefone, mensagem, intervalo_ms}] }
+ * Resposta: { session_id, total }
+ */
+app.post('/api/disparo/start', async (req, res) => {
+  const { user_id, instance_name, mensagem_base, contacts } = req.body;
+
+  if (!user_id || !instance_name || !Array.isArray(contacts) || contacts.length === 0) {
+    return res.status(400).json({
+      error: 'user_id, instance_name e contacts[] são obrigatórios.',
+    });
+  }
+
+  // Cancela sessão ativa anterior do mesmo usuário
+  const { rows: existing } = await db.query(
+    `SELECT id FROM disparo_sessions WHERE user_id = $1 AND status = 'running'`,
+    [user_id]
+  );
+  for (const row of existing) {
+    const ctrl = activeSessions.get(row.id);
+    if (ctrl) ctrl.aborted = true;
+    await db.query(
+      `UPDATE disparo_sessions SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+      [row.id]
+    );
+    // Marca itens pendentes/enviando como cancelados
+    await db.query(
+      `UPDATE disparo_items SET status = 'error', error_message = 'Sessão substituída por novo disparo'
+       WHERE session_id = $1 AND status IN ('pending', 'sending')`,
+      [row.id]
+    );
+  }
+
+  // Cria nova sessão
+  const { rows: [session] } = await db.query(
+    `INSERT INTO disparo_sessions (user_id, instance_name, mensagem_base, total)
+     VALUES ($1, $2, $3, $4)
+     RETURNING *`,
+    [user_id, instance_name, mensagem_base || '', contacts.length]
+  );
+
+  // Insere todos os itens com query parametrizada (segura contra SQL injection)
+  if (contacts.length > 0) {
+    const params = [];
+    const valueParts = contacts.map((c, i) => {
+      const base = i * 6;
+      params.push(
+        session.id,
+        i,
+        String(c.empresa  || ''),
+        String(c.telefone || ''),
+        String(c.mensagem || ''),
+        Number(c.intervalo_ms) || 10000
+      );
+      return `($${base+1}, $${base+2}, $${base+3}, $${base+4}, $${base+5}, $${base+6})`;
+    });
+
+    await db.query(
+      `INSERT INTO disparo_items (session_id, position, empresa, telefone, mensagem, intervalo_ms)
+       VALUES ${valueParts.join(',')}`,
+      params
+    );
+  }
+
+  // Inicia processamento assíncrono (não bloqueia a resposta HTTP)
+  processDisparoSession(session.id, instance_name).catch(console.error);
+
+  console.log(`[disparo] Sessão ${session.id} iniciada: ${contacts.length} contatos, instância ${instance_name}`);
+  res.json({ session_id: session.id, total: contacts.length });
+});
+
+// ─── GET /api/disparo/active ──────────────────────────────────────────────────
+/**
+ * Retorna a sessão ativa (running) de um usuário, se existir.
+ * Query: ?user_id=<uuid>
+ * Resposta: { active: false } | { active: true, session: { ...session fields } }
+ */
+app.get('/api/disparo/active', async (req, res) => {
+  const { user_id } = req.query;
+  if (!user_id) return res.status(400).json({ error: 'user_id é obrigatório.' });
+
+  const { rows: [session] } = await db.query(
+    `SELECT * FROM disparo_sessions
+     WHERE user_id = $1 AND status = 'running'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [user_id]
+  );
+
+  if (!session) return res.json({ active: false });
+
+  res.json({ active: true, session });
+});
+
+// ─── GET /api/disparo/:id/status ──────────────────────────────────────────────
+/**
+ * Retorna estado detalhado de uma sessão específica, com todos os seus itens.
+ * Usado pelo frontend para acompanhar progresso quando o sessionId é conhecido.
+ */
+app.get('/api/disparo/:id/status', async (req, res) => {
+  const { rows: [session] } = await db.query(
+    `SELECT * FROM disparo_sessions WHERE id = $1`,
+    [req.params.id]
+  );
+  if (!session) return res.status(404).json({ error: 'Sessão não encontrada.' });
+
+  const { rows: items } = await db.query(
+    `SELECT id, position, empresa, telefone, status, error_message, sent_at
+     FROM disparo_items WHERE session_id = $1 ORDER BY position`,
+    [req.params.id]
+  );
+
+  res.json({ session, items });
+});
+
+// ─── POST /api/disparo/:id/cancel ─────────────────────────────────────────────
+/**
+ * Cancela uma sessão em andamento.
+ * O abort é sinalizado ao loop assíncrono via activeSessions map.
+ * Itens ainda pendentes são marcados como cancelados.
+ */
+app.post('/api/disparo/:id/cancel', async (req, res) => {
+  const { id } = req.params;
+
+  const ctrl = activeSessions.get(id);
+  if (ctrl) ctrl.aborted = true;
+
+  await db.query(
+    `UPDATE disparo_sessions SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+    [id]
+  );
+  await db.query(
+    `UPDATE disparo_items SET status = 'error', error_message = 'Cancelado pelo usuário'
+     WHERE session_id = $1 AND status IN ('pending', 'sending')`,
+    [id]
+  );
+
+  console.log(`[disparo] Sessão ${id} cancelada pelo usuário.`);
+  res.json({ ok: true });
+});
+
+// ─── Startup ──────────────────────────────────────────────────────────────────
 const PORT = cfg('PORT') || 3001;
-app.listen(PORT, () => console.log(`✅ API server rodando em http://localhost:${PORT}`));
+app.listen(PORT, async () => {
+  console.log(`✅ API server rodando em http://localhost:${PORT}`);
+  // Retoma sessões de disparo que estavam rodando antes do restart
+  await resumePendingSessions();
+});

@@ -7,6 +7,8 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { Loader2 } from "lucide-react";
 import { restoreScrollAfterReload } from "@/lib/utils";
+import { useDisparoSession } from "@/hooks/useDisparoSession";
+import { DispatchBanner } from "@/components/DispatchBanner";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import Contacts from "./pages/Contacts";
@@ -41,6 +43,32 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+/**
+ * Wrapper para rotas protegidas que exibe o DispatchBanner global.
+ * O banner aparece em TODAS as páginas logadas quando há disparo ativo.
+ */
+function ProtectedShell({ children }: { children: React.ReactNode }) {
+  const { activeSession, cancelSession, dismissSession } = useDisparoSession();
+
+  return (
+    <>
+      {activeSession && (
+        <div className="fixed top-0 left-0 right-0 z-50 px-4 pt-2">
+          <DispatchBanner
+            session={activeSession}
+            onCancel={() => cancelSession(activeSession.id)}
+            onDismiss={dismissSession}
+          />
+        </div>
+      )}
+      {/* Empurra o conteúdo para baixo quando o banner está visível */}
+      <div className={activeSession ? 'pt-16' : undefined}>
+        {children}
+      </div>
+    </>
+  );
+}
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -50,37 +78,37 @@ const App = () => (
         <ScrollRestore />
         <Routes>
           <Route path="/auth" element={<Auth />} />
-          <Route 
-            path="/" 
+          <Route
+            path="/"
             element={
               <ProtectedRoute>
-                <Index />
+                <ProtectedShell><Index /></ProtectedShell>
               </ProtectedRoute>
-            } 
+            }
           />
-          <Route 
-            path="/contacts" 
+          <Route
+            path="/contacts"
             element={
               <ProtectedRoute>
-                <Contacts />
+                <ProtectedShell><Contacts /></ProtectedShell>
               </ProtectedRoute>
-            } 
+            }
           />
-          <Route 
-            path="/coletar-leads" 
+          <Route
+            path="/coletar-leads"
             element={
               <ProtectedRoute>
-                <ColetarLeads />
+                <ProtectedShell><ColetarLeads /></ProtectedShell>
               </ProtectedRoute>
-            } 
+            }
           />
-          <Route 
-            path="/history" 
+          <Route
+            path="/history"
             element={
               <ProtectedRoute>
-                <HistoryPage />
+                <ProtectedShell><HistoryPage /></ProtectedShell>
               </ProtectedRoute>
-            } 
+            }
           />
           <Route path="*" element={<NotFound />} />
         </Routes>

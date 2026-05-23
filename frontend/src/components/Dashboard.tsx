@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Play, Square, Users, CheckCircle2, XCircle, LogOut, History, KeyRound, ListOrdered, Search } from 'lucide-react';
+import { Play, Square, Users, CheckCircle2, XCircle, LogOut, History, KeyRound, ListOrdered, Search, Loader2 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -13,23 +13,28 @@ import { WhatsAppConnector } from './WhatsAppConnector';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ContactRow } from '@/types/dispatcher';
 import { cn } from '@/lib/utils';
-import { generateAIMessage, sendToWebhook, getRandomDelay, sleep, DISPATCH_DELAY_MIN_LIMIT, DISPATCH_DELAY_MAX_LIMIT } from '@/lib/api';
+import { generateAIMessage, getRandomDelay, DISPATCH_DELAY_MIN_LIMIT, DISPATCH_DELAY_MAX_LIMIT } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/useAuth';
 import { useDispatchHistory } from '@/hooks/useDispatchHistory';
 import { useContacts } from '@/hooks/useContacts';
 import { useLLMConfig } from '@/hooks/useLLMConfig';
 import { useWhatsAppInstances } from '@/hooks/useWhatsAppInstances';
+import { useDisparoSession, type BatchContact } from '@/hooks/useDisparoSession';
 
 export function Dashboard() {
   const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [mensagemBase, setMensagemBase] = useState('');
-  const [isRunning, setIsRunning] = useState(false);
   const [savingContactsToProfile, setSavingContactsToProfile] = useState(false);
   const [llmConfigOpen, setLLMConfigOpen] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [countdown, setCountdown] = useState(0);
   const [maxCountdown, setMaxCountdown] = useState(0);
+  /** Fase 1 do novo fluxo: geração de mensagens IA antes de enviar ao backend */
+  const [isGenerating, setIsGenerating]     = useState(false);
+  const [generateProgress, setGenerateProgress] = useState(0);
+  const [generateTotal, setGenerateTotal]   = useState(0);
+  const abortGenerateRef = useRef(false);
   const [delayMin, setDelayMin] = useState(() => {
     const v = Number(localStorage.getItem('disparador_delay_min'));
     return Number.isFinite(v) && v >= DISPATCH_DELAY_MIN_LIMIT && v <= DISPATCH_DELAY_MAX_LIMIT ? v : DISPATCH_DELAY_MIN_LIMIT;
@@ -38,28 +43,19 @@ export function Dashboard() {
     const v = Number(localStorage.getItem('disparador_delay_max'));
     return Number.isFinite(v) && v >= DISPATCH_DELAY_MIN_LIMIT && v <= DISPATCH_DELAY_MAX_LIMIT ? v : 25;
   });
-  const abortRef = useRef(false);
+  const { toast }    = useToast();
+  const { user, signOut } = useAuth();
   const {
-    toast
-  } = useToast();
-  const {
-    user,
-    signOut
-  } = useAuth();
-  const {
-    history,
-    loading: historyLoading,
-    saveDispatch,
-    refreshHistory
-  } = useDispatchHistory();
+    activeSession,
+    isStarting,
+    startSession,
+    cancelSession,
+  } = useDisparoSession();
+  const { history } = useDispatchHistory();
   const {
     contacts: savedContacts,
     loading: contactsLoading,
     saveContactsFromFile,
-    updateContactMessage,
-    deleteContact,
-    refreshContacts,
-    totalContacts,
   } = useContacts();
   const { config: llmConfig } = useLLMConfig();
   const { instances: whatsappInstances } = useWhatsAppInstances();
@@ -68,8 +64,11 @@ export function Dashboard() {
   /** Instância WhatsApp conectada usada no disparo (primeira com status 'open'). */
   const dispatchInstanceName = whatsappInstances.find((i) => i.status === 'open')?.instance_name;
   const totalEnviados = contacts.filter(c => c.status === 'sucesso').length;
-  const totalErros = contacts.filter(c => c.status === 'erro').length;
-  const progress = contacts.length > 0 ? (totalEnviados + totalErros) / contacts.length * 100 : 0;
+  const totalErros    = contacts.filter(c => c.status === 'erro').length;
+  const progress      = contacts.length > 0 ? (totalEnviados + totalErros) / contacts.length * 100 : 0;
+
+  /** Disparo está bloqueado se há sessão rodando no backend ou se está gerando mensagens */
+  const isRunning = isGenerating || isStarting || activeSession?.status === 'running';
 
   // Ao carregar: se a lista de disparo estiver vazia, preenche com os contatos salvos no perfil
   useEffect(() => {
@@ -88,249 +87,123 @@ export function Dashboard() {
     }
   }, [contactsLoading, savedContacts, contacts.length]);
 
-  // Handle page unload warning
+  // Aviso ao fechar aba apenas durante a fase de geração de IA (lado cliente).
+  // Após o batch estar no backend, fechar o browser é seguro — o servidor continua.
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (isRunning) {
+      if (isGenerating) {
         e.preventDefault();
-        e.returnValue = 'Os disparos estão em andamento. Tem certeza que deseja sair?';
+        e.returnValue = 'Ainda gerando mensagens com IA. Aguarde ou as mensagens serão perdidas.';
         return e.returnValue;
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isRunning]);
+  }, [isGenerating]);
   const updateContact = useCallback((id: string, updates: Partial<ContactRow>) => {
-    setContacts(prev => prev.map(c => c.id === id ? {
-      ...c,
-      ...updates
-    } : c));
+    setContacts(prev => prev.map(c => c.id === id ? { ...c, ...updates } : c));
   }, []);
-  const processContact = async (contact: ContactRow): Promise<boolean> => {
-    if (abortRef.current) {
-      // Salva registro de cancelamento se o processo foi abortado
-      try {
-        await saveDispatch({
-          empresa: contact.empresa,
-          telefone: contact.telefoneFormatado,
-          mensagem_base: mensagemBase,
-          mensagem_ia: null,
-          status: 'cancelled',
-          error_message: 'Processo cancelado pelo usuário'
-        });
-      } catch (error) {
-        console.error(`Erro ao salvar histórico de cancelamento para ${contact.empresa}:`, error);
-      }
-      return false;
-    }
 
-    let mensagemIA = mensagemBase;
-    let errorMessage = '';
-
-    // Step 1: Generate AI message
-    updateContact(contact.id, {
-      status: 'gerando-ia'
-    });
-    
-    try {
-      const aiResult = await generateAIMessage(contact.empresa, mensagemBase, llmConfig ?? null);
-      mensagemIA = aiResult.message;
-      
-      if (!aiResult.success && aiResult.error) {
-        errorMessage = `IA: ${aiResult.error}`;
-        console.warn(`Erro ao gerar mensagem IA para ${contact.empresa}:`, aiResult.error);
-        // Continua com a mensagem original mesmo se a IA falhar
-      }
-      
-      updateContact(contact.id, {
-        mensagemIA
-      });
-    } catch (error) {
-      console.error(`Erro inesperado ao gerar mensagem IA para ${contact.empresa}:`, error);
-      errorMessage = 'Erro inesperado ao gerar mensagem';
-    }
-    
-    if (abortRef.current) {
-      // Salva registro de cancelamento após gerar IA
-      try {
-        await saveDispatch({
-          empresa: contact.empresa,
-          telefone: contact.telefoneFormatado,
-          mensagem_base: mensagemBase,
-          mensagem_ia: mensagemIA,
-          status: 'cancelled',
-          error_message: 'Processo cancelado pelo usuário após gerar mensagem IA'
-        });
-      } catch (error) {
-        console.error(`Erro ao salvar histórico de cancelamento para ${contact.empresa}:`, error);
-      }
-      return false;
-    }
-
-    // Step 2: Send to webhook (sempre exige instância do usuário)
-    if (!dispatchInstanceName) {
-      updateContact(contact.id, { status: 'erro', erro: 'Nenhum WhatsApp conectado. Conecte no Conector WhatsApp.' });
-      return false;
-    }
-    updateContact(contact.id, {
-      status: 'enviando'
-    });
-    
-    try {
-      const webhookResult = await sendToWebhook(contact.empresa, contact.telefoneFormatado, mensagemIA, dispatchInstanceName);
-      
-      if (webhookResult.success) {
-        updateContact(contact.id, {
-          status: 'sucesso'
-        });
-
-        // Save to history - sempre salva disparos bem-sucedidos
-        try {
-          await saveDispatch({
-            empresa: contact.empresa,
-            telefone: contact.telefoneFormatado,
-            mensagem_base: mensagemBase,
-            mensagem_ia: mensagemIA,
-            status: 'success'
-          });
-        } catch (error) {
-          console.error(`Erro ao salvar histórico para ${contact.empresa}:`, error);
-          // Não falha o processo se não conseguir salvar o histórico, mas loga o erro
-        }
-
-        // Update contact's last message
-        try {
-          await updateContactMessage(contact.telefoneFormatado, mensagemIA);
-        } catch (error) {
-          console.error(`Erro ao atualizar contato ${contact.empresa}:`, error);
-          // Não falha o processo se não conseguir atualizar o contato
-        }
-
-        return true;
-      } else {
-        const finalErrorMessage = webhookResult.error || 'Falha ao enviar';
-        updateContact(contact.id, {
-          status: 'erro',
-          erro: finalErrorMessage
-        });
-
-        // Save error to history - sempre salva disparos com erro
-        try {
-          await saveDispatch({
-            empresa: contact.empresa,
-            telefone: contact.telefoneFormatado,
-            mensagem_base: mensagemBase,
-            mensagem_ia: mensagemIA,
-            status: 'error',
-            error_message: finalErrorMessage
-          });
-        } catch (error) {
-          console.error(`Erro ao salvar histórico de erro para ${contact.empresa}:`, error);
-        }
-        
-        return false;
-      }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Erro inesperado ao enviar';
-      console.error(`Erro inesperado ao enviar para ${contact.empresa}:`, error);
-      
-      updateContact(contact.id, {
-        status: 'erro',
-        erro: errorMsg
-      });
-
-      // Save error to history - sempre salva erros inesperados
-      try {
-        await saveDispatch({
-          empresa: contact.empresa,
-          telefone: contact.telefoneFormatado,
-          mensagem_base: mensagemBase,
-          mensagem_ia: mensagemIA,
-          status: 'error',
-          error_message: errorMsg
-        });
-      } catch (saveError) {
-        console.error(`Erro ao salvar histórico de erro para ${contact.empresa}:`, saveError);
-      }
-      
-      return false;
-    }
-  };
+  /**
+   * Novo fluxo de disparo em 2 fases:
+   *
+   * Fase 1 — Geração de IA (client-side, usa chave do usuário):
+   *   Gera variações de mensagem para todos os contatos pendentes,
+   *   exibindo progresso "X/N" na tela.
+   *
+   * Fase 2 — Enfileiramento no backend:
+   *   Envia o batch completo para o backend via POST /api/disparo/start.
+   *   O backend persiste a fila e executa independentemente do browser.
+   *   Fechar o site não interrompe os disparos.
+   */
   const runDispatcher = async () => {
     if (!dispatchInstanceName) {
-      toast({
-        title: "Conecte um WhatsApp",
-        description: "Cada usuário precisa ter seu próprio WhatsApp conectado. Use o Conector WhatsApp ao lado para conectar e tente novamente.",
-        variant: "destructive"
-      });
+      toast({ title: "Conecte um WhatsApp", description: "Use o Conector WhatsApp ao lado para conectar e tente novamente.", variant: "destructive" });
       return;
     }
     if (!mensagemBase.trim()) {
-      toast({
-        title: "Mensagem obrigatória",
-        description: "Digite uma mensagem base antes de iniciar.",
-        variant: "destructive"
-      });
+      toast({ title: "Mensagem obrigatória", description: "Digite uma mensagem base antes de iniciar.", variant: "destructive" });
       return;
     }
     const pendingContacts = contacts.filter(c => c.status === 'pendente' || c.status === 'erro');
     if (pendingContacts.length === 0) {
+      toast({ title: "Nenhum contato pendente", description: "Todos os contatos já foram processados." });
+      return;
+    }
+
+    // ── Fase 1: Geração de mensagens IA ──────────────────────────────────────
+    setIsGenerating(true);
+    abortGenerateRef.current = false;
+    setGenerateProgress(0);
+    setGenerateTotal(pendingContacts.length);
+
+    toast({
+      title: "Gerando mensagens com IA...",
+      description: `Variando mensagem para ${pendingContacts.length} contatos. Aguarde.`,
+    });
+
+    const batchContacts: BatchContact[] = [];
+
+    for (let i = 0; i < pendingContacts.length; i++) {
+      if (abortGenerateRef.current) break;
+
+      const contact = pendingContacts[i];
+      updateContact(contact.id, { status: 'gerando-ia' });
+
+      const aiResult = await generateAIMessage(contact.empresa, mensagemBase, llmConfig ?? null);
+      const mensagem = aiResult.message; // fallback para mensagemBase se IA falhar
+
+      updateContact(contact.id, { mensagemIA: mensagem, status: 'pendente' });
+      setGenerateProgress(i + 1);
+
+      // Intervalo entre mensagens da fila (pré-calculado por contato)
+      const intervalo_ms = getRandomDelay(delayMin, delayMax) * 1000;
+      batchContacts.push({
+        empresa:      contact.empresa,
+        telefone:     contact.telefoneFormatado,
+        mensagem,
+        intervalo_ms,
+      });
+    }
+
+    setIsGenerating(false);
+    setGenerateProgress(0);
+    setGenerateTotal(0);
+
+    if (abortGenerateRef.current || batchContacts.length === 0) return;
+
+    // ── Fase 2: Enfileirar no backend ────────────────────────────────────────
+    const sessionId = await startSession(batchContacts, dispatchInstanceName, mensagemBase);
+
+    if (!sessionId) {
       toast({
-        title: "Nenhum contato pendente",
-        description: "Todos os contatos já foram processados."
+        title: "Erro ao iniciar disparo",
+        description: "Não foi possível conectar ao servidor. Verifique se o backend está rodando.",
+        variant: "destructive",
       });
       return;
     }
-    setIsRunning(true);
-    abortRef.current = false;
-    toast({
-      title: "Disparos iniciados",
-      description: `Processando ${pendingContacts.length} contatos...`
-    });
-    let successCount = 0;
-    let errorCount = 0;
-    for (let i = 0; i < contacts.length; i++) {
-      if (abortRef.current) break;
-      const contact = contacts[i];
-      if (contact.status !== 'pendente' && contact.status !== 'erro') continue;
-      setCurrentIndex(i);
-      const success = await processContact(contact);
-      if (abortRef.current) break;
-      if (success) {
-        successCount += 1;
-      } else {
-        errorCount += 1;
-      }
 
-      // Intervalo aleatório (editável pelo usuário, min 2s / max 40s) entre cada disparo bem-sucedido
-      if (success && i < contacts.length - 1) {
-        const delay = getRandomDelay(delayMin, delayMax);
-        setMaxCountdown(delay);
-        setCountdown(delay);
-        for (let s = delay; s > 0; s--) {
-          if (abortRef.current) break;
-          setCountdown(s);
-          await sleep(1);
-        }
-        setCountdown(0);
-      }
-    }
-    setIsRunning(false);
-    setCurrentIndex(-1);
-    setCountdown(0);
-    if (!abortRef.current) {
-      toast({
-        title: "Disparos concluídos!",
-        description: `${successCount} enviados com sucesso, ${errorCount} erros.`
-      });
-    }
-  };
-  const stopDispatcher = () => {
-    abortRef.current = true;
+    // Marca todos como "enviando" — o backend gerencia o status real a partir daqui
+    pendingContacts.forEach(c => updateContact(c.id, { status: 'enviando' }));
+
     toast({
-      title: "Disparos pausados",
-      description: "O processo será interrompido após a ação atual."
+      title: "Disparo iniciado no servidor!",
+      description: `${batchContacts.length} mensagens enfileiradas. Pode fechar o site — o processo continua.`,
     });
+  };
+
+  const stopDispatcher = () => {
+    if (isGenerating) {
+      // Cancela a fase de geração de IA (ainda no cliente)
+      abortGenerateRef.current = true;
+      setIsGenerating(false);
+      toast({ title: "Geração cancelada", description: "A geração de mensagens foi interrompida." });
+    } else if (activeSession?.status === 'running') {
+      // Cancela a sessão no backend
+      cancelSession(activeSession.id);
+      toast({ title: "Cancelando disparo...", description: "Sinal enviado ao servidor. Pode levar alguns segundos." });
+    }
   };
   const handleRetry = (id: string) => {
     updateContact(id, {
@@ -696,14 +569,53 @@ export function Dashboard() {
                   <span className="text-muted-foreground text-xs">(entre {DISPATCH_DELAY_MIN_LIMIT} e {DISPATCH_DELAY_MAX_LIMIT}s)</span>
                 </div>
 
-                {/* Progress Bar */}
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Progresso</span>
-                    <span className="font-medium">{Math.round(progress)}%</span>
+                {/* Progresso de geração de IA (Fase 1) */}
+                {isGenerating && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Gerando mensagens com IA...
+                      </span>
+                      <span className="font-medium">{generateProgress}/{generateTotal}</span>
+                    </div>
+                    <Progress
+                      value={generateTotal > 0 ? (generateProgress / generateTotal) * 100 : 0}
+                      className="h-2"
+                    />
                   </div>
-                  <Progress value={progress} className="h-2" />
-                </div>
+                )}
+
+                {/* Progresso do disparo no backend (Fase 2) */}
+                {!isGenerating && activeSession?.status === 'running' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Disparando no servidor...
+                      </span>
+                      <span className="font-medium">{activeSession.sent}/{activeSession.total}</span>
+                    </div>
+                    <Progress
+                      value={activeSession.total > 0 ? (activeSession.sent / activeSession.total) * 100 : 0}
+                      className="h-2"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Pode fechar o site — o processo continua no servidor.
+                    </p>
+                  </div>
+                )}
+
+                {/* Progresso local (legado — exibido se não houver sessão ativa) */}
+                {!isGenerating && activeSession?.status !== 'running' && (
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Progresso</span>
+                      <span className="font-medium">{Math.round(progress)}%</span>
+                    </div>
+                    <Progress value={progress} className="h-2" />
+                  </div>
+                )}
 
                 {/* Countdown Timer */}
                 {countdown > 0 && <CountdownTimer seconds={countdown} maxSeconds={maxCountdown} />}
