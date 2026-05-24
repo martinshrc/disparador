@@ -31,7 +31,7 @@ const STATUS_ORDER: Record<string, number> = {
   erro: 4,
 };
 
-type FilterType = 'todos' | 'primeiro' | 'ja-enviou';
+export type FilterType = 'todos' | 'primeiro' | 'ja-enviou';
 
 interface ContactsTableProps {
   contacts: ContactRow[];
@@ -41,15 +41,18 @@ interface ContactsTableProps {
   onRemoveSelected: (ids: string[]) => void;
   isRunning: boolean;
   currentIndex: number;
+  /** Filtro ativo (controlado pelo Dashboard para sincronizar com o disparo) */
+  filter: FilterType;
+  onFilterChange: (f: FilterType) => void;
+  segmentoFilter: string;
+  onSegmentoFilterChange: (s: string) => void;
 }
 
-export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemoveSelected, isRunning, currentIndex }: ContactsTableProps) {
+export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemoveSelected, isRunning, currentIndex, filter, onFilterChange, segmentoFilter, onSegmentoFilterChange }: ContactsTableProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const [sortByStatus, setSortByStatus] = useState(false);
-  const [filter, setFilter] = useState<FilterType>('todos');
   const [search, setSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [segmentoFilter, setSegmentoFilter] = useState<string>('_todos');
 
   /** Lista de segmentos únicos presentes na lista (exclui vazios) */
   const segmentos = useMemo(() => {
@@ -89,13 +92,13 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemov
   };
 
   const handleFilterChange = (f: FilterType) => {
-    setFilter(f);
+    onFilterChange(f);
     setCurrentPage(1);
     setSelectedIds(new Set());
   };
 
   const handleSegmentoChange = (seg: string) => {
-    setSegmentoFilter(seg);
+    onSegmentoFilterChange(seg);
     setCurrentPage(1);
     setSelectedIds(new Set());
   };

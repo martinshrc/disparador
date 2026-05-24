@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Play, Square, Users, CheckCircle2, XCircle, LogOut, History, KeyRound, ListOrdered, Search, Loader2 } from 'lucide-react';
+import { Play, Square, Users, CheckCircle2, XCircle, LogOut, History, KeyRound, ListOrdered, Search, Loader2, RotateCcw } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -12,6 +12,7 @@ import { LLMConfigDialog } from './LLMConfigDialog';
 import { WhatsAppConnector } from './WhatsAppConnector';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ContactRow } from '@/types/dispatcher';
+import { type FilterType } from '@/components/ContactsTable';
 import { cn } from '@/lib/utils';
 import { generateAIMessage, getRandomDelay, DISPATCH_DELAY_MIN_LIMIT, DISPATCH_DELAY_MAX_LIMIT } from '@/lib/api';
 import { normalizePhone } from '@/lib/utils';
@@ -44,8 +45,34 @@ export function Dashboard() {
     const v = Number(localStorage.getItem('disparador_delay_max'));
     return Number.isFinite(v) && v >= DISPATCH_DELAY_MIN_LIMIT && v <= DISPATCH_DELAY_MAX_LIMIT ? v : 25;
   });
+  /** Filtros controlados pelo Dashboard para sincronizar com runDispatcher */
+  const [dispatchFilter, setDispatchFilter]     = useState<FilterType>('todos');
+  const [dispatchSegmento, setDispatchSegmento] = useState<string>('_todos');
   const { toast }    = useToast();
   const { user, signOut } = useAuth();
+
+  /**
+   * IDs de contatos excluídos da lista de disparo (persistidos por usuário no localStorage).
+   * Os contatos permanecem no Supabase/leads — apenas ficam fora da lista de disparo local.
+   * Inicializado de forma síncrona com o user.id já disponível via contexto.
+   */
+  const [excludedIds, setExcludedIds] = useState<Set<string>>(() => {
+    if (!user?.id) return new Set<string>();
+    try {
+      const stored = localStorage.getItem(`disparador_excluded_${user.id}`);
+      return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
+    } catch { return new Set<string>(); }
+  });
+
+  const addToExcluded = useCallback((ids: string[]) => {
+    setExcludedIds(prev => {
+      const next = new Set(prev);
+      ids.forEach(id => next.add(id));
+      if (user?.id) localStorage.setItem(`disparador_excluded_${user.id}`, JSON.stringify([...next]));
+      return next;
+    });
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const {
     activeSession,
     isStarting,
@@ -71,22 +98,34 @@ export function Dashboard() {
   /** Disparo está bloqueado se há sessão rodando no backend ou se está gerando mensagens */
   const isRunning = isGenerating || isStarting || activeSession?.status === 'running';
 
+  /** Contatos que serão efetivamente disparados com o filtro ativo */
+  const filteredPendingCount = (() => {
+    let c = contacts.filter(r => r.status === 'pendente' || r.status === 'erro');
+    if (dispatchFilter === 'primeiro')  c = c.filter(r => !r.jaEnviou);
+    if (dispatchFilter === 'ja-enviou') c = c.filter(r => r.jaEnviou);
+    if (dispatchSegmento !== '_todos')  c = c.filter(r => r.segmento === dispatchSegmento);
+    return c.length;
+  })();
+
   // Ao carregar: se a lista de disparo estiver vazia, preenche com os contatos salvos no perfil
+  // IDs em excludedIds (localStorage) são omitidos — o lead continua no Supabase, apenas sai da fila.
   useEffect(() => {
     if (contactsLoading || contacts.length > 0) return;
     if (savedContacts.length > 0) {
-      const asContactRows: ContactRow[] = savedContacts.map((c) => ({
-        id: c.id,
-        empresa: c.empresa,
-        telefone: c.telefone,
-        telefoneFormatado: normalizePhone(c.telefone),
-        mensagemIA: c.ultima_mensagem ?? '',
-        status: 'pendente' as const,
-        jaEnviou: !!c.ultima_mensagem_data,
-      }));
+      const asContactRows: ContactRow[] = savedContacts
+        .filter(c => !excludedIds.has(c.id)) // eslint-disable-line react-hooks/exhaustive-deps
+        .map((c) => ({
+          id: c.id,
+          empresa: c.empresa,
+          telefone: c.telefone,
+          telefoneFormatado: normalizePhone(c.telefone),
+          mensagemIA: c.ultima_mensagem ?? '',
+          status: 'pendente' as const,
+          jaEnviou: !!c.ultima_mensagem_data,
+        }));
       setContacts(asContactRows);
     }
-  }, [contactsLoading, savedContacts, contacts.length]);
+  }, [contactsLoading, savedContacts, contacts.length]); // excludedIds intencionalmente omitido — carregado síncronamente antes do efeito
 
   // Aviso ao fechar aba apenas durante a fase de geração de IA (lado cliente).
   // Após o batch estar no backend, fechar o browser é seguro — o servidor continua.
@@ -126,9 +165,19 @@ export function Dashboard() {
       toast({ title: "Mensagem obrigatória", description: "Digite uma mensagem base antes de iniciar.", variant: "destructive" });
       return;
     }
-    const pendingContacts = contacts.filter(c => c.status === 'pendente' || c.status === 'erro');
+    // Aplica os mesmos filtros visíveis na tabela — disparo respeita o filtro ativo
+    let pendingContacts = contacts.filter(c => c.status === 'pendente' || c.status === 'erro');
+    if (dispatchFilter === 'primeiro')   pendingContacts = pendingContacts.filter(c => !c.jaEnviou);
+    if (dispatchFilter === 'ja-enviou')  pendingContacts = pendingContacts.filter(c => c.jaEnviou);
+    if (dispatchSegmento !== '_todos')   pendingContacts = pendingContacts.filter(c => c.segmento === dispatchSegmento);
+
     if (pendingContacts.length === 0) {
-      toast({ title: "Nenhum contato pendente", description: "Todos os contatos já foram processados." });
+      const filterLabel = dispatchFilter === 'primeiro' ? '"Primeiro contato"' : dispatchFilter === 'ja-enviou' ? '"Já enviou"' : '';
+      const segLabel    = dispatchSegmento !== '_todos' ? ` (segmento: ${dispatchSegmento})` : '';
+      toast({
+        title: "Nenhum contato pendente",
+        description: `Nenhum contato pendente com o filtro ${filterLabel}${segLabel} ativo.`,
+      });
       return;
     }
 
@@ -228,11 +277,20 @@ export function Dashboard() {
 
   const handleRemove = (id: string) => {
     setContacts(prev => prev.filter(c => c.id !== id));
+    addToExcluded([id]);
   };
 
   const handleRemoveSelected = (ids: string[]) => {
     const idSet = new Set(ids);
     setContacts(prev => prev.filter(c => !idSet.has(c.id)));
+    addToExcluded(ids);
+  };
+
+  /** Limpa as exclusões e recarrega a lista completa do Supabase. */
+  const handleRestoreAll = () => {
+    setExcludedIds(new Set());
+    if (user?.id) localStorage.removeItem(`disparador_excluded_${user.id}`);
+    setContacts([]); // reseta a lista → o useEffect recarrega do Supabase sem filtros
   };
   const handleFileLoaded = async (newContacts: ContactRow[]) => {
     if (newContacts.length === 0) return;
@@ -452,15 +510,33 @@ export function Dashboard() {
                   <div>
                     <CardTitle className="text-lg">Painel de Controle</CardTitle>
                     <CardDescription>
-                      {dispatchInstanceName && contacts.length > 0 && mensagemBase.trim()
-                        ? `Disparando pelo seu WhatsApp: ${dispatchInstanceName}`
-                        : !dispatchInstanceName
-                          ? 'Conecte um WhatsApp no card "Conector WhatsApp" na configuração acima.'
-                          : !mensagemBase.trim()
-                            ? 'Escreva uma mensagem base no card "Configuração da Mensagem" na configuração acima.'
-                            : contacts.length === 0
-                              ? 'Adicione contatos via Coletar leads antes de disparar.'
-                              : `Disparando pelo seu WhatsApp: ${dispatchInstanceName}`}
+                      {!dispatchInstanceName
+                        ? 'Conecte um WhatsApp no card "Conector WhatsApp" na configuração acima.'
+                        : !mensagemBase.trim()
+                          ? 'Escreva uma mensagem base no card "Configuração da Mensagem" na configuração acima.'
+                          : contacts.length === 0
+                            ? 'Adicione contatos via Coletar leads antes de disparar.'
+                            : (
+                              <span>
+                                {dispatchInstanceName}{' '}
+                                &mdash;{' '}
+                                <span className={cn(
+                                  'font-medium',
+                                  filteredPendingCount === 0 ? 'text-destructive' : 'text-foreground'
+                                )}>
+                                  {filteredPendingCount} contato{filteredPendingCount !== 1 ? 's' : ''}
+                                </span>
+                                {' '}serão disparados
+                                {dispatchFilter !== 'todos' && (
+                                  <span className="text-muted-foreground">
+                                    {' '}(filtro: {dispatchFilter === 'primeiro' ? 'Primeiro contato' : 'Já enviou'})
+                                  </span>
+                                )}
+                                {dispatchSegmento !== '_todos' && (
+                                  <span className="text-muted-foreground"> · {dispatchSegmento}</span>
+                                )}
+                              </span>
+                            )}
                     </CardDescription>
                   </div>
 
@@ -636,15 +712,49 @@ export function Dashboard() {
           <h2 className="text-lg font-semibold text-foreground mb-4">Lista de contatos</h2>
           <Card className="glass-card">
             <CardHeader className="pb-3">
-              <CardTitle className="text-lg">Contatos na lista de disparo</CardTitle>
-              <CardDescription>
-                {contacts.length > 0
-                  ? `${contacts.length} contatos carregados.`
-                  : 'Use Coletar leads para adicionar contatos à lista de disparo.'}
-              </CardDescription>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <CardTitle className="text-lg">Contatos na lista de disparo</CardTitle>
+                  <CardDescription>
+                    {contacts.length > 0
+                      ? `${contacts.length} contatos carregados.`
+                      : 'Use Coletar leads para adicionar contatos à lista de disparo.'}
+                    {excludedIds.size > 0 && (
+                      <span className="ml-2 text-muted-foreground/70">
+                        ({excludedIds.size} oculto{excludedIds.size !== 1 ? 's' : ''} desta lista)
+                      </span>
+                    )}
+                  </CardDescription>
+                </div>
+                {excludedIds.size > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRestoreAll}
+                    disabled={isRunning}
+                    className="shrink-0 gap-2 text-muted-foreground hover:text-foreground"
+                    title={`Restaurar ${excludedIds.size} contato(s) oculto(s) na lista`}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Restaurar lista completa
+                  </Button>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
-              <ContactsTable contacts={contacts} onRetry={handleRetry} onRetryAll={handleRetryAll} onRemove={handleRemove} onRemoveSelected={handleRemoveSelected} isRunning={isRunning} currentIndex={currentIndex} />
+              <ContactsTable
+                contacts={contacts}
+                onRetry={handleRetry}
+                onRetryAll={handleRetryAll}
+                onRemove={handleRemove}
+                onRemoveSelected={handleRemoveSelected}
+                isRunning={isRunning}
+                currentIndex={currentIndex}
+                filter={dispatchFilter}
+                onFilterChange={setDispatchFilter}
+                segmentoFilter={dispatchSegmento}
+                onSegmentoFilterChange={setDispatchSegmento}
+              />
             </CardContent>
           </Card>
         </section>
