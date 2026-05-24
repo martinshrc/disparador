@@ -41,25 +41,26 @@ export function useDisparoSession() {
     'x-api-key':    BACKEND_API_KEY || '',
   };
 
-  /** Consulta o backend por sessão ativa do usuário logado. */
+  /** Consulta o backend por sessão ativa (running) ou recente (completed/cancelled) do usuário. */
   const checkActive = useCallback(async () => {
     if (!user?.id || !BACKEND_URL) return;
 
     try {
-      const res  = await fetch(`${BACKEND_URL}/api/disparo/active?user_id=${user.id}`, { headers });
+      const res = await fetch(`${BACKEND_URL}/api/disparo/active?user_id=${user.id}`, { headers });
       if (!res.ok) return;
       const data = await res.json() as { active: boolean; session?: DisparoSession };
 
       if (data.active && data.session) {
+        // Sessão running — seta estado. O useEffect abaixo inicia o polling.
         setActiveSession(data.session);
+      } else if (data.session) {
+        // Sessão recente (completed/cancelled) — exibe resumo ao reabrir, sem iniciar polling.
+        setActiveSession((prev) => prev ?? data.session!);
       } else {
-        // Sessão terminou — atualiza estado local e para o polling
-        setActiveSession((prev) => {
-          if (!prev) return null;
-          // Mantém o snapshot final para o componente exibir "concluído"
-          return { ...prev, status: 'completed' };
-        });
-        stopPolling();
+        // Sem nenhuma sessão relevante: se havia running local, marca como concluída.
+        setActiveSession((prev) =>
+          prev?.status === 'running' ? { ...prev, status: 'completed' } : prev
+        );
       }
     } catch {
       // Falha silenciosa — backend pode estar temporariamente indisponível

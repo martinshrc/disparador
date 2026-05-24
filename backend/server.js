@@ -245,6 +245,7 @@ async function processDisparoSession(sessionId, instanceName) {
             Telefone:     item.telefone,
             Mensagem:     item.mensagem,
             instanceName: instanceName,
+            intervalo_ms: item.intervalo_ms, // intervalo do frontend — usado como 1º wait no n8n
           }),
           ...(signal ? { signal } : {}),
         });
@@ -273,10 +274,8 @@ async function processDisparoSession(sessionId, instanceName) {
         );
       }
 
-      // Aguarda o intervalo definido por item antes do próximo envio
-      if (!ctrl.aborted) {
-        await sleep(item.intervalo_ms);
-      }
+      // Intervalo agora é gerenciado pelo n8n (Wait frontend + Wait random 2-10s)
+      // Não há sleep aqui para evitar duplicidade
     }
   } catch (fatalErr) {
     console.error(`[disparo] Erro fatal na sessão ${sessionId}:`, fatalErr);
@@ -533,25 +532,37 @@ app.post('/api/disparo/start', async (req, res) => {
 
 // ─── GET /api/disparo/active ──────────────────────────────────────────────────
 /**
- * Retorna a sessão ativa (running) de um usuário, se existir.
+ * Retorna a sessão mais recente de um usuário:
+ *   - running: sessão em andamento (active: true)
+ *   - completed/cancelled/failed nas últimas 2h: para exibir resumo ao reabrir (active: false)
  * Query: ?user_id=<uuid>
- * Resposta: { active: false } | { active: true, session: { ...session fields } }
+ * Resposta: { active: false } | { active: true, session } | { active: false, session } (recente)
  */
 app.get('/api/disparo/active', async (req, res) => {
   const { user_id } = req.query;
   if (!user_id) return res.status(400).json({ error: 'user_id é obrigatório.' });
 
-  const { rows: [session] } = await db.query(
+  // 1. Prioridade: sessão running
+  const { rows: [running] } = await db.query(
     `SELECT * FROM disparo_sessions
      WHERE user_id = $1 AND status = 'running'
-     ORDER BY created_at DESC
-     LIMIT 1`,
+     ORDER BY created_at DESC LIMIT 1`,
     [user_id]
   );
+  if (running) return res.json({ active: true, session: running });
 
-  if (!session) return res.json({ active: false });
+  // 2. Fallback: sessão recente (últimas 2h) — permite exibir resumo ao reabrir o sistema
+  const { rows: [recent] } = await db.query(
+    `SELECT * FROM disparo_sessions
+     WHERE user_id = $1
+       AND status IN ('completed', 'cancelled', 'failed')
+       AND updated_at > NOW() - INTERVAL '2 hours'
+     ORDER BY updated_at DESC LIMIT 1`,
+    [user_id]
+  );
+  if (recent) return res.json({ active: false, session: recent });
 
-  res.json({ active: true, session });
+  res.json({ active: false });
 });
 
 // ─── GET /api/disparo/:id/status ──────────────────────────────────────────────

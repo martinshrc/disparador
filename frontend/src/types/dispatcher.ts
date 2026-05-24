@@ -8,6 +8,8 @@ export interface ContactRow {
   erro?: string;
   /** true se já foi disparado em sessão anterior (ultima_mensagem_data preenchido no Supabase) */
   jaEnviou?: boolean;
+  /** segmento da empresa (ex: Restaurante, Clínica) — usado para seleção em lote */
+  segmento?: string;
 }
 
 export interface DispatcherState {

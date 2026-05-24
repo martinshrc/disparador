@@ -14,6 +14,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { ContactRow } from '@/types/dispatcher';
 import { cn } from '@/lib/utils';
 import { generateAIMessage, getRandomDelay, DISPATCH_DELAY_MIN_LIMIT, DISPATCH_DELAY_MAX_LIMIT } from '@/lib/api';
+import { normalizePhone } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/useAuth';
 import { useDispatchHistory } from '@/hooks/useDispatchHistory';
@@ -78,7 +79,7 @@ export function Dashboard() {
         id: c.id,
         empresa: c.empresa,
         telefone: c.telefone,
-        telefoneFormatado: c.telefone,
+        telefoneFormatado: normalizePhone(c.telefone),
         mensagemIA: c.ultima_mensagem ?? '',
         status: 'pendente' as const,
         jaEnviou: !!c.ultima_mensagem_data,
@@ -227,6 +228,11 @@ export function Dashboard() {
 
   const handleRemove = (id: string) => {
     setContacts(prev => prev.filter(c => c.id !== id));
+  };
+
+  const handleRemoveSelected = (ids: string[]) => {
+    const idSet = new Set(ids);
+    setContacts(prev => prev.filter(c => !idSet.has(c.id)));
   };
   const handleFileLoaded = async (newContacts: ContactRow[]) => {
     if (newContacts.length === 0) return;
@@ -638,7 +644,7 @@ export function Dashboard() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <ContactsTable contacts={contacts} onRetry={handleRetry} onRetryAll={handleRetryAll} onRemove={handleRemove} isRunning={isRunning} currentIndex={currentIndex} />
+              <ContactsTable contacts={contacts} onRetry={handleRetry} onRetryAll={handleRetryAll} onRemove={handleRemove} onRemoveSelected={handleRemoveSelected} isRunning={isRunning} currentIndex={currentIndex} />
             </CardContent>
           </Card>
         </section>
