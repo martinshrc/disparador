@@ -48,9 +48,10 @@ export function Dashboard() {
   const [generateProgress, setGenerateProgress] = useState(0);
   const [generateTotal, setGenerateTotal]   = useState(0);
   const abortGenerateRef = useRef(false);
-  /** Ref para acessar contacts dentro de effects sem adicioná-los às deps */
+  /** Ref para acessar contacts dentro de effects sem adicioná-los às deps.
+   *  Atualizado inline durante o render (antes de qualquer effect rodar). */
   const contactsRef = useRef<ContactRow[]>([]);
-  useEffect(() => { contactsRef.current = contacts; }); // sem deps — atualiza a cada render
+  contactsRef.current = contacts; // atualização síncrona — sempre reflete o render atual
   const [delayMin, setDelayMin] = useState(() => {
     const v = Number(localStorage.getItem('disparador_delay_min'));
     return Number.isFinite(v) && v >= DISPATCH_DELAY_MIN_LIMIT && v <= DISPATCH_DELAY_MAX_LIMIT ? v : DISPATCH_DELAY_MIN_LIMIT;
