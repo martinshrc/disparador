@@ -127,6 +127,44 @@ export function Dashboard() {
       .catch(() => {}); // falha silenciosa — backend pode estar offline
   }, [contacts.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * Sincroniza o status individual de cada item de disparo de volta para os ContactRow.
+   * Dispara a cada mudança em sent/errors/status da sessão ativa (a cada ~5s durante o polling).
+   * Mapeamento: disparo_items.status → ContactRow.status
+   *   pending | sending → 'enviando'
+   *   sent             → 'sucesso'
+   *   error            → 'erro'
+   */
+  useEffect(() => {
+    const sessionId = activeSession?.id;
+    if (!sessionId) return;
+    if (activeSession.status !== 'running' && activeSession.status !== 'completed' && activeSession.status !== 'failed') return;
+
+    apiClient.get(`/api/disparo/${sessionId}/status`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((data: { items?: { telefone: string; status: string; error_message?: string }[] } | null) => {
+        if (!data?.items?.length) return;
+        const phoneMap = new Map(data.items.map(item => [item.telefone, item]));
+        setContacts(prev => {
+          let changed = false;
+          const next = prev.map(c => {
+            const item = phoneMap.get(c.telefoneFormatado);
+            if (!item) return c;
+            const mapped: ContactRow['status'] =
+              item.status === 'sent'                  ? 'sucesso' :
+              item.status === 'error'                 ? 'erro'    :
+              (item.status === 'sending' ||
+               item.status === 'pending')             ? 'enviando' : c.status;
+            if (mapped === c.status) return c;
+            changed = true;
+            return { ...c, status: mapped, erro: item.error_message ?? c.erro };
+          });
+          return changed ? next : prev;
+        });
+      })
+      .catch(() => {});
+  }, [activeSession?.sent, activeSession?.errors, activeSession?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const addToExcluded = useCallback((ids: string[]) => {
     setExcludedIds(prev => {
       const next = new Set(prev);
