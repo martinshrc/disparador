@@ -612,6 +612,36 @@ app.post('/api/disparo/:id/cancel', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── POST /api/contacts/prospeccao ───────────────────────────────────────────
+/**
+ * Enriquece um lote de contatos com dados do funil de prospecção (blitzar_prospeccao).
+ * Body: { phones: string[] }  — lista de telefones normalizados (somente dígitos, ex: 5511999999999)
+ * Resposta: array de { telefone, etapa, status, qualificado, opt_out, total_respostas, ultimo_contato }
+ */
+app.post('/api/contacts/prospeccao', async (req, res) => {
+  const { phones } = req.body;
+  if (!Array.isArray(phones) || !phones.length) return res.json([]);
+  // Sanitiza: aceita apenas strings com dígitos (sem risco de SQL injection via parameterized query,
+  // mas evitamos lixo no array de qualquer forma)
+  const sanitized = phones
+    .filter(p => typeof p === 'string' && /^\d+$/.test(p.trim()))
+    .map(p => p.trim())
+    .slice(0, 2000); // limite de segurança
+  if (!sanitized.length) return res.json([]);
+  try {
+    const { rows } = await db.query(
+      `SELECT telefone, etapa, status, qualificado, opt_out, total_respostas, ultimo_contato
+       FROM blitzar_prospeccao
+       WHERE telefone = ANY($1::text[])`,
+      [sanitized]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[prospeccao] Erro ao buscar dados do funil:', err);
+    res.status(500).json({ error: 'Erro interno ao consultar funil.' });
+  }
+});
+
 // ─── Startup ──────────────────────────────────────────────────────────────────
 const PORT = cfg('PORT') || 3001;
 app.listen(PORT, async () => {

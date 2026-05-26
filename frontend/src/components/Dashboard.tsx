@@ -12,7 +12,7 @@ import { LLMConfigDialog } from './LLMConfigDialog';
 import { WhatsAppConnector } from './WhatsAppConnector';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ContactRow } from '@/types/dispatcher';
-import { type FilterType } from '@/components/ContactsTable';
+import { type FilterType, FILTER_LABELS } from '@/components/ContactsTable';
 import { cn } from '@/lib/utils';
 import { generateAIMessage, getRandomDelay, DISPATCH_DELAY_MIN_LIMIT, DISPATCH_DELAY_MAX_LIMIT } from '@/lib/api';
 import { normalizePhone } from '@/lib/utils';
@@ -23,6 +23,17 @@ import { useContacts } from '@/hooks/useContacts';
 import { useLLMConfig } from '@/hooks/useLLMConfig';
 import { useWhatsAppInstances } from '@/hooks/useWhatsAppInstances';
 import { useDisparoSession, type BatchContact } from '@/hooks/useDisparoSession';
+import { apiClient } from '@/lib/apiClient';
+
+interface ProspeccaoRow {
+  telefone: string;
+  etapa: 1 | 2 | 3;
+  status: 'ativo' | 'qualificado' | 'frio' | 'opt_out';
+  qualificado: boolean;
+  opt_out: boolean;
+  total_respostas: number;
+  ultimo_contato: string;
+}
 
 export function Dashboard() {
   const [contacts, setContacts] = useState<ContactRow[]>([]);
@@ -54,15 +65,67 @@ export function Dashboard() {
   /**
    * IDs de contatos excluídos da lista de disparo (persistidos por usuário no localStorage).
    * Os contatos permanecem no Supabase/leads — apenas ficam fora da lista de disparo local.
-   * Inicializado de forma síncrona com o user.id já disponível via contexto.
+   *
+   * Não inicializado de forma síncrona: o auth do Supabase é assíncrono, então user?.id pode
+   * ser null na montagem (especialmente em hard reload). O useEffect abaixo carrega do
+   * localStorage assim que user.id fica disponível.
    */
-  const [excludedIds, setExcludedIds] = useState<Set<string>>(() => {
-    if (!user?.id) return new Set<string>();
+  const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set<string>());
+
+  // Carrega exclusões do localStorage quando user.id fica disponível (cobre hard reload / SHIFT+F5)
+  useEffect(() => {
+    if (!user?.id) return;
     try {
       const stored = localStorage.getItem(`disparador_excluded_${user.id}`);
-      return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
-    } catch { return new Set<string>(); }
-  });
+      setExcludedIds(stored ? new Set<string>(JSON.parse(stored)) : new Set<string>());
+    } catch { /* ignore */ }
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Quando excludedIds muda (load inicial ou remoção), garante que a lista já carregada
+  // também seja filtrada — cobre o caso em que savedContacts carregou antes do auth resolver.
+  useEffect(() => {
+    if (excludedIds.size === 0) return;
+    setContacts(prev => {
+      const filtered = prev.filter(c => !excludedIds.has(c.id));
+      return filtered.length === prev.length ? prev : filtered;
+    });
+  }, [excludedIds]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Rastreia quais telefones já foram enriquecidos com dados do funil.
+   * Evita chamadas repetidas quando contatos individuais são removidos (contacts.length muda).
+   */
+  const enrichedPhonesRef = useRef<Set<string>>(new Set());
+
+  // Enriquece os contatos com dados do funil (blitzar_prospeccao) via backend.
+  // Roda sempre que novos telefones aparecerem na lista.
+  // Silencioso em caso de falha — funil é enhancement, não bloqueante.
+  useEffect(() => {
+    if (contacts.length === 0) return;
+    const newPhones = contacts
+      .map(c => c.telefoneFormatado)
+      .filter(p => p && !enrichedPhonesRef.current.has(p));
+    if (!newPhones.length) return;
+    newPhones.forEach(p => enrichedPhonesRef.current.add(p));
+
+    apiClient.post('/api/contacts/prospeccao', { phones: newPhones })
+      .then(r => (r.ok ? r.json() : []))
+      .then((rows: ProspeccaoRow[]) => {
+        if (!rows.length) return;
+        const map = new Map(rows.map(r => [r.telefone, r]));
+        setContacts(prev => prev.map(c => {
+          const p = map.get(c.telefoneFormatado);
+          if (!p) return c;
+          return {
+            ...c,
+            etapaFunil: p.etapa,
+            statusFunil: p.status,
+            totalRespostas: p.total_respostas,
+          };
+        }));
+      })
+      .catch(() => {}); // falha silenciosa — backend pode estar offline
+  }, [contacts.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addToExcluded = useCallback((ids: string[]) => {
     setExcludedIds(prev => {
@@ -98,14 +161,26 @@ export function Dashboard() {
   /** Disparo está bloqueado se há sessão rodando no backend ou se está gerando mensagens */
   const isRunning = isGenerating || isStarting || activeSession?.status === 'running';
 
+  /** Aplica o filtro de disparo ativo sobre um array de contatos */
+  const applyDispatchFilter = useCallback((rows: ContactRow[]) => {
+    let c = rows;
+    if (dispatchFilter === 'primeiro')           c = c.filter(r => !r.jaEnviou);
+    if (dispatchFilter === 'ja-enviou')          c = c.filter(r => !!r.jaEnviou);
+    if (dispatchFilter === 'funil-ativo')        c = c.filter(r => r.statusFunil === 'ativo');
+    if (dispatchFilter === 'funil-frio')         c = c.filter(r => r.statusFunil === 'frio');
+    if (dispatchFilter === 'funil-qualificado')  c = c.filter(r => r.statusFunil === 'qualificado');
+    if (dispatchFilter === 'funil-opt_out')      c = c.filter(r => r.statusFunil === 'opt_out');
+    if (dispatchFilter === 'etapa-1')            c = c.filter(r => r.etapaFunil === 1);
+    if (dispatchFilter === 'etapa-2')            c = c.filter(r => r.etapaFunil === 2);
+    if (dispatchFilter === 'etapa-3')            c = c.filter(r => r.etapaFunil === 3);
+    if (dispatchSegmento !== '_todos')           c = c.filter(r => r.segmento === dispatchSegmento);
+    return c;
+  }, [dispatchFilter, dispatchSegmento]);
+
   /** Contatos que serão efetivamente disparados com o filtro ativo */
-  const filteredPendingCount = (() => {
-    let c = contacts.filter(r => r.status === 'pendente' || r.status === 'erro');
-    if (dispatchFilter === 'primeiro')  c = c.filter(r => !r.jaEnviou);
-    if (dispatchFilter === 'ja-enviou') c = c.filter(r => r.jaEnviou);
-    if (dispatchSegmento !== '_todos')  c = c.filter(r => r.segmento === dispatchSegmento);
-    return c.length;
-  })();
+  const filteredPendingCount = applyDispatchFilter(
+    contacts.filter(r => r.status === 'pendente' || r.status === 'erro')
+  ).length;
 
   // Ao carregar: se a lista de disparo estiver vazia, preenche com os contatos salvos no perfil
   // IDs em excludedIds (localStorage) são omitidos — o lead continua no Supabase, apenas sai da fila.
@@ -122,10 +197,11 @@ export function Dashboard() {
           mensagemIA: c.ultima_mensagem ?? '',
           status: 'pendente' as const,
           jaEnviou: !!c.ultima_mensagem_data,
+          ultimaMensagemData: c.ultima_mensagem_data ?? null,
         }));
       setContacts(asContactRows);
     }
-  }, [contactsLoading, savedContacts, contacts.length]); // excludedIds intencionalmente omitido — carregado síncronamente antes do efeito
+  }, [contactsLoading, savedContacts, contacts.length]); // excludedIds omitido — o useEffect separado filtra a lista caso carregue após os contatos
 
   // Aviso ao fechar aba apenas durante a fase de geração de IA (lado cliente).
   // Após o batch estar no backend, fechar o browser é seguro — o servidor continua.
@@ -166,17 +242,15 @@ export function Dashboard() {
       return;
     }
     // Aplica os mesmos filtros visíveis na tabela — disparo respeita o filtro ativo
-    let pendingContacts = contacts.filter(c => c.status === 'pendente' || c.status === 'erro');
-    if (dispatchFilter === 'primeiro')   pendingContacts = pendingContacts.filter(c => !c.jaEnviou);
-    if (dispatchFilter === 'ja-enviou')  pendingContacts = pendingContacts.filter(c => c.jaEnviou);
-    if (dispatchSegmento !== '_todos')   pendingContacts = pendingContacts.filter(c => c.segmento === dispatchSegmento);
+    const pendingContacts = applyDispatchFilter(
+      contacts.filter(c => c.status === 'pendente' || c.status === 'erro')
+    );
 
     if (pendingContacts.length === 0) {
-      const filterLabel = dispatchFilter === 'primeiro' ? '"Primeiro contato"' : dispatchFilter === 'ja-enviou' ? '"Já enviou"' : '';
-      const segLabel    = dispatchSegmento !== '_todos' ? ` (segmento: ${dispatchSegmento})` : '';
+      const segLabel = dispatchSegmento !== '_todos' ? ` (segmento: ${dispatchSegmento})` : '';
       toast({
         title: "Nenhum contato pendente",
-        description: `Nenhum contato pendente com o filtro ${filterLabel}${segLabel} ativo.`,
+        description: `Nenhum contato pendente com o filtro "${FILTER_LABELS[dispatchFilter]}"${segLabel} ativo.`,
       });
       return;
     }
@@ -262,16 +336,14 @@ export function Dashboard() {
       erro: undefined
     });
   };
-  const handleRetryAll = () => {
-    setContacts(prev => prev.map(c => ({
-      ...c,
-      status: 'pendente',
-      mensagemIA: '',
-      erro: undefined
-    })));
+  const handleRetryAll = (ids: string[]) => {
+    const idSet = new Set(ids);
+    setContacts(prev => prev.map(c =>
+      idSet.has(c.id) ? { ...c, status: 'pendente', mensagemIA: '', erro: undefined } : c
+    ));
     toast({
       title: "Contatos resetados",
-      description: "Todos os contatos foram marcados como pendentes."
+      description: `${ids.length} contato${ids.length !== 1 ? 's' : ''} marcado${ids.length !== 1 ? 's' : ''} como pendente${ids.length !== 1 ? 's' : ''}.`
     });
   };
 
@@ -290,6 +362,7 @@ export function Dashboard() {
   const handleRestoreAll = () => {
     setExcludedIds(new Set());
     if (user?.id) localStorage.removeItem(`disparador_excluded_${user.id}`);
+    enrichedPhonesRef.current = new Set(); // força re-enriquecimento após reload
     setContacts([]); // reseta a lista → o useEffect recarrega do Supabase sem filtros
   };
   const handleFileLoaded = async (newContacts: ContactRow[]) => {
@@ -529,7 +602,7 @@ export function Dashboard() {
                                 {' '}serão disparados
                                 {dispatchFilter !== 'todos' && (
                                   <span className="text-muted-foreground">
-                                    {' '}(filtro: {dispatchFilter === 'primeiro' ? 'Primeiro contato' : 'Já enviou'})
+                                    {' '}(filtro: {FILTER_LABELS[dispatchFilter]})
                                   </span>
                                 )}
                                 {dispatchSegmento !== '_todos' && (
