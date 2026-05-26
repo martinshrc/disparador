@@ -131,6 +131,32 @@ export function Dashboard() {
       .catch(() => {}); // falha silenciosa — backend pode estar offline
   }, [contacts.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const addToExcluded = useCallback((ids: string[]) => {
+    setExcludedIds(prev => {
+      const next = new Set(prev);
+      ids.forEach(id => next.add(id));
+      if (user?.id) localStorage.setItem(`disparador_excluded_${user.id}`, JSON.stringify([...next]));
+      return next;
+    });
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const {
+    activeSession,
+    isStarting,
+    startSession,
+    cancelSession,
+  } = useDisparoSession();
+  const { history } = useDispatchHistory();
+  const {
+    contacts: savedContacts,
+    loading: contactsLoading,
+    saveContactsFromFile,
+    updateContactMessage,
+  } = useContacts();
+  const { config: llmConfig } = useLLMConfig();
+  const { instances: whatsappInstances } = useWhatsAppInstances();
+  const navigate = useNavigate();
+
   /**
    * Sincroniza o status individual de cada item de disparo de volta para os ContactRow.
    *
@@ -141,6 +167,9 @@ export function Dashboard() {
    *   pending | sending → 'enviando'
    *   sent             → 'sucesso'
    *   error            → 'erro'
+   *
+   * IMPORTANTE: este useEffect deve ficar APÓS as declarações de activeSession e
+   * updateContactMessage para evitar TDZ no bundle minificado pelo Rollup.
    */
   useEffect(() => {
     const sessionId = activeSession?.id;
@@ -196,32 +225,6 @@ export function Dashboard() {
       return () => clearInterval(interval);
     }
   }, [activeSession?.id, activeSession?.status]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const addToExcluded = useCallback((ids: string[]) => {
-    setExcludedIds(prev => {
-      const next = new Set(prev);
-      ids.forEach(id => next.add(id));
-      if (user?.id) localStorage.setItem(`disparador_excluded_${user.id}`, JSON.stringify([...next]));
-      return next;
-    });
-  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const {
-    activeSession,
-    isStarting,
-    startSession,
-    cancelSession,
-  } = useDisparoSession();
-  const { history } = useDispatchHistory();
-  const {
-    contacts: savedContacts,
-    loading: contactsLoading,
-    saveContactsFromFile,
-    updateContactMessage,
-  } = useContacts();
-  const { config: llmConfig } = useLLMConfig();
-  const { instances: whatsappInstances } = useWhatsAppInstances();
-  const navigate = useNavigate();
 
   /** Instância WhatsApp conectada usada no disparo (primeira com status 'open'). */
   const dispatchInstanceName = whatsappInstances.find((i) => i.status === 'open')?.instance_name;
