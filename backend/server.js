@@ -273,50 +273,48 @@ async function processDisparoSession(sessionId, instanceName) {
           [sessionId]
         );
 
-        // Atualiza blitzar_leads (status + contadores) e grava no dispatch_log
-        // Wrap em try-catch para não interromper o disparo se o lead não estiver no pool
+        // Atualiza blitzar_leads (se lead vier do pool) e grava SEMPRE no dispatch_log
         if (sessionUserId) {
           try {
-            // Normaliza telefone para comparação (remove não-dígitos)
             const telNorm = String(item.telefone).replace(/\D/g, '');
 
-            await db.query(
-              `UPDATE blitzar_leads bl
-               SET status_lead         = 'contactado',
-                   ultimo_disparo_at   = NOW(),
-                   quantidade_disparos = quantidade_disparos + 1,
-                   ultima_mensagem     = $3,
-                   updated_at          = NOW()
-               FROM blitzar_leads_pool bp
-               WHERE bl.pool_lead_id = bp.id
-                 AND bl.user_id = $1
-                 AND (regexp_replace(bp.telefone,           '\\D','','g') = $2
-                   OR regexp_replace(bp.telefone_secundario,'\\D','','g') = $2)`,
-              [sessionUserId, telNorm, item.mensagem]
-            );
-
-            await db.query(
-              `INSERT INTO blitzar_dispatch_log
-                 (user_id, lead_id, empresa, cnpj, telefone, mensagem_base, mensagem_ia, instance_name, status)
-               SELECT $1,
-                      bl.id,
-                      $3,
-                      bp.cnpj,
-                      $4,
-                      $5,
-                      $6,
-                      $7,
-                      'enviado'
+            // Tenta localizar o lead no pool para enriquecer o log (lead_id, cnpj)
+            const { rows: poolRows } = await db.query(
+              `SELECT bp.cnpj, bl.id AS lead_id
                FROM blitzar_leads_pool bp
                LEFT JOIN blitzar_leads bl
                       ON bl.pool_lead_id = bp.id AND bl.user_id = $1
-               WHERE regexp_replace(bp.telefone,           '\\D','','g') = $2
-                  OR regexp_replace(bp.telefone_secundario,'\\D','','g') = $2
+               WHERE regexp_replace(COALESCE(bp.telefone,           ''), '\\D','','g') = $2
+                  OR regexp_replace(COALESCE(bp.telefone_secundario,''), '\\D','','g') = $2
                LIMIT 1`,
-              [sessionUserId, telNorm, item.empresa, item.telefone, sessionMsgBase, item.mensagem, instanceName]
+              [sessionUserId, telNorm]
+            );
+            const poolRow = poolRows[0] || null;
+
+            // Atualiza blitzar_leads somente se o lead estiver no pool
+            if (poolRow?.lead_id) {
+              await db.query(
+                `UPDATE blitzar_leads
+                 SET status_lead         = 'contactado',
+                     ultimo_disparo_at   = NOW(),
+                     quantidade_disparos = quantidade_disparos + 1,
+                     ultima_mensagem     = $2,
+                     updated_at          = NOW()
+                 WHERE id = $1`,
+                [poolRow.lead_id, item.mensagem]
+              );
+            }
+
+            // SEMPRE grava no dispatch_log (lead_id e cnpj ficam NULL se não estiver no pool)
+            await db.query(
+              `INSERT INTO blitzar_dispatch_log
+                 (user_id, lead_id, empresa, cnpj, telefone, mensagem_base, mensagem_ia, instance_name, status)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'enviado')`,
+              [sessionUserId, poolRow?.lead_id || null, item.empresa, poolRow?.cnpj || null,
+               item.telefone, sessionMsgBase, item.mensagem, instanceName]
             );
           } catch (logErr) {
-            console.warn(`[disparo] Falha ao gravar log do lead (telefone ${item.telefone}):`, logErr.message);
+            console.warn(`[disparo] Falha ao gravar log (telefone ${item.telefone}):`, logErr.message);
           }
         }
       } catch (err) {
@@ -382,6 +380,27 @@ async function resumePendingSessions() {
     console.error('[disparo] Erro ao retomar sessões pendentes:', err);
   }
 }
+
+// ─── GET /api/dispatch/history ───────────────────────────────────────────────
+/**
+ * Retorna o histórico de disparos do usuário a partir de blitzar_dispatch_log (VPS).
+ * Query params: user_id (obrigatório), limit (default 500)
+ */
+app.get('/api/dispatch/history', async (req, res) => {
+  const { user_id, limit = 500 } = req.query;
+  if (!user_id) return res.status(400).json({ error: 'user_id obrigatório' });
+
+  const { rows } = await db.query(
+    `SELECT id, empresa, cnpj, telefone, mensagem_base, mensagem_ia,
+            instance_name, status, error_message, created_at
+     FROM blitzar_dispatch_log
+     WHERE user_id = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [user_id, Math.min(Number(limit), 1000)]
+  );
+  res.json(rows);
+});
 
 // ─── GET /api/leads/credits ───────────────────────────────────────────────────
 app.get('/api/leads/credits', async (_req, res) => {

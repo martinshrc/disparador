@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Play, Square, Users, CheckCircle2, XCircle, LogOut, History, KeyRound, ListOrdered, Search, Loader2, RotateCcw } from 'lucide-react';
+import { Play, Square, Users, CheckCircle2, XCircle, LogOut, History, KeyRound, ListOrdered, Search, Loader2, RotateCcw, Upload } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -40,6 +40,7 @@ export function Dashboard() {
   const [mensagemBase, setMensagemBase] = useState('');
   const [savingContactsToProfile, setSavingContactsToProfile] = useState(false);
   const [llmConfigOpen, setLLMConfigOpen] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [countdown, setCountdown] = useState(0);
   const [maxCountdown, setMaxCountdown] = useState(0);
@@ -149,7 +150,7 @@ export function Dashboard() {
     startSession,
     cancelSession,
   } = useDisparoSession();
-  const { history, saveDispatch } = useDispatchHistory();
+  const { history } = useDispatchHistory();
   const {
     contacts: savedContacts,
     loading: contactsLoading,
@@ -216,27 +217,9 @@ export function Dashboard() {
           });
 
           // Persiste ultima_mensagem + ultima_mensagem_data no Supabase para enviados.
-          // Grava histórico de disparo (dispatch_history) para enviados e erros.
+          // Histórico de disparo agora é gravado pelo backend em blitzar_dispatch_log.
           newlySent.forEach(c => {
             updateContactMessage(c.telefone, c.mensagemIA).catch(() => {});
-            saveDispatch({
-              empresa: c.empresa,
-              telefone: c.telefone,
-              mensagem_base: mensagemBaseRef.current,
-              mensagem_ia: c.mensagemIA || null,
-              status: 'success',
-            }).catch(() => {});
-          });
-          newlyErrored.forEach(c => {
-            const item = phoneMap.get(c.telefoneFormatado);
-            saveDispatch({
-              empresa: c.empresa,
-              telefone: c.telefone,
-              mensagem_base: mensagemBaseRef.current,
-              mensagem_ia: c.mensagemIA || null,
-              status: 'error',
-              error_message: item?.error_message || null,
-            }).catch(() => {});
           });
         })
         .catch(() => {});
@@ -663,10 +646,21 @@ export function Dashboard() {
                   </Button>
                 </CardContent>
               </Card>
-              {/* HIBERNANDO: upload de planilha desativado temporariamente — reativar quando necessário */}
-              {false && (
+              <Button
+                variant="outline"
+                className={cn('w-full justify-start gap-2', showUpload && 'border-primary text-primary')}
+                onClick={() => setShowUpload(v => !v)}
+                disabled={isRunning}
+              >
+                <Upload className="h-4 w-4" />
+                Importar planilha (Excel / CSV)
+              </Button>
+              {showUpload && (
                 <FileUpload
-                  onFileLoaded={handleFileLoaded}
+                  onFileLoaded={(newContacts) => {
+                    handleFileLoaded(newContacts);
+                    setShowUpload(false);
+                  }}
                   disabled={isRunning || savingContactsToProfile}
                   savingToProfile={savingContactsToProfile}
                 />
