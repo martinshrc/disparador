@@ -52,6 +52,9 @@ export function Dashboard() {
    *  Atualizado inline durante o render (antes de qualquer effect rodar). */
   const contactsRef = useRef<ContactRow[]>([]);
   contactsRef.current = contacts; // atualização síncrona — sempre reflete o render atual
+  /** Ref para acessar mensagemBase dentro do effect de sync sem deps extras. */
+  const mensagemBaseRef = useRef('');
+  mensagemBaseRef.current = mensagemBase;
   const [delayMin, setDelayMin] = useState(() => {
     const v = Number(localStorage.getItem('disparador_delay_min'));
     return Number.isFinite(v) && v >= DISPATCH_DELAY_MIN_LIMIT && v <= DISPATCH_DELAY_MAX_LIMIT ? v : DISPATCH_DELAY_MIN_LIMIT;
@@ -146,7 +149,7 @@ export function Dashboard() {
     startSession,
     cancelSession,
   } = useDisparoSession();
-  const { history } = useDispatchHistory();
+  const { history, saveDispatch } = useDispatchHistory();
   const {
     contacts: savedContacts,
     loading: contactsLoading,
@@ -190,6 +193,10 @@ export function Dashboard() {
             const item = phoneMap.get(c.telefoneFormatado);
             return item?.status === 'sent' && c.status !== 'sucesso';
           });
+          const newlyErrored = contactsRef.current.filter(c => {
+            const item = phoneMap.get(c.telefoneFormatado);
+            return item?.status === 'error' && c.status !== 'erro';
+          });
 
           setContacts(prev => {
             let changed = false;
@@ -208,10 +215,28 @@ export function Dashboard() {
             return changed ? next : prev;
           });
 
-          // Persiste ultima_mensagem + ultima_mensagem_data no Supabase.
-          // Usa c.telefone (raw) para bater com contacts.telefone no Supabase.
+          // Persiste ultima_mensagem + ultima_mensagem_data no Supabase para enviados.
+          // Grava histórico de disparo (dispatch_history) para enviados e erros.
           newlySent.forEach(c => {
             updateContactMessage(c.telefone, c.mensagemIA).catch(() => {});
+            saveDispatch({
+              empresa: c.empresa,
+              telefone: c.telefone,
+              mensagem_base: mensagemBaseRef.current,
+              mensagem_ia: c.mensagemIA || null,
+              status: 'success',
+            }).catch(() => {});
+          });
+          newlyErrored.forEach(c => {
+            const item = phoneMap.get(c.telefoneFormatado);
+            saveDispatch({
+              empresa: c.empresa,
+              telefone: c.telefone,
+              mensagem_base: mensagemBaseRef.current,
+              mensagem_ia: c.mensagemIA || null,
+              status: 'error',
+              error_message: item?.error_message || null,
+            }).catch(() => {});
           });
         })
         .catch(() => {});
