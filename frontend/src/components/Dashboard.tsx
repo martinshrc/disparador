@@ -48,6 +48,9 @@ export function Dashboard() {
   const [generateProgress, setGenerateProgress] = useState(0);
   const [generateTotal, setGenerateTotal]   = useState(0);
   const abortGenerateRef = useRef(false);
+  /** Ref para acessar contacts dentro de effects sem adicioná-los às deps */
+  const contactsRef = useRef<ContactRow[]>([]);
+  useEffect(() => { contactsRef.current = contacts; }); // sem deps — atualiza a cada render
   const [delayMin, setDelayMin] = useState(() => {
     const v = Number(localStorage.getItem('disparador_delay_min'));
     return Number.isFinite(v) && v >= DISPATCH_DELAY_MIN_LIMIT && v <= DISPATCH_DELAY_MAX_LIMIT ? v : DISPATCH_DELAY_MIN_LIMIT;
@@ -129,7 +132,10 @@ export function Dashboard() {
 
   /**
    * Sincroniza o status individual de cada item de disparo de volta para os ContactRow.
-   * Dispara a cada mudança em sent/errors/status da sessão ativa (a cada ~5s durante o polling).
+   *
+   * Enquanto 'running': interval de 3s para atualização contínua.
+   * Quando 'completed'/'failed'/'cancelled': uma sincronização final.
+   *
    * Mapeamento: disparo_items.status → ContactRow.status
    *   pending | sending → 'enviando'
    *   sent             → 'sucesso'
@@ -138,32 +144,57 @@ export function Dashboard() {
   useEffect(() => {
     const sessionId = activeSession?.id;
     if (!sessionId) return;
-    if (activeSession.status !== 'running' && activeSession.status !== 'completed' && activeSession.status !== 'failed') return;
+    const syncableStatuses = ['running', 'completed', 'failed', 'cancelled'];
+    if (!syncableStatuses.includes(activeSession.status)) return;
 
-    apiClient.get(`/api/disparo/${sessionId}/status`)
-      .then(r => (r.ok ? r.json() : null))
-      .then((data: { items?: { telefone: string; status: string; error_message?: string }[] } | null) => {
-        if (!data?.items?.length) return;
-        const phoneMap = new Map(data.items.map(item => [item.telefone, item]));
-        setContacts(prev => {
-          let changed = false;
-          const next = prev.map(c => {
+    const syncItemStatuses = () => {
+      apiClient.get(`/api/disparo/${sessionId}/status`)
+        .then(r => (r.ok ? r.json() : null))
+        .then((data: { items?: { telefone: string; status: string; error_message?: string }[] } | null) => {
+          if (!data?.items?.length) return;
+          const phoneMap = new Map(data.items.map(item => [item.telefone, item]));
+
+          // Identifica contatos recém-confirmados como enviados para persistir no Supabase
+          // Usa c.telefone (raw) pois o Supabase armazena o telefone sem normalização
+          const newlySent = contactsRef.current.filter(c => {
             const item = phoneMap.get(c.telefoneFormatado);
-            if (!item) return c;
-            const mapped: ContactRow['status'] =
-              item.status === 'sent'                  ? 'sucesso' :
-              item.status === 'error'                 ? 'erro'    :
-              (item.status === 'sending' ||
-               item.status === 'pending')             ? 'enviando' : c.status;
-            if (mapped === c.status) return c;
-            changed = true;
-            return { ...c, status: mapped, erro: item.error_message ?? c.erro };
+            return item?.status === 'sent' && c.status !== 'sucesso';
           });
-          return changed ? next : prev;
-        });
-      })
-      .catch(() => {});
-  }, [activeSession?.sent, activeSession?.errors, activeSession?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+          setContacts(prev => {
+            let changed = false;
+            const next = prev.map(c => {
+              const item = phoneMap.get(c.telefoneFormatado);
+              if (!item) return c;
+              const mapped: ContactRow['status'] =
+                item.status === 'sent'                  ? 'sucesso' :
+                item.status === 'error'                 ? 'erro'    :
+                (item.status === 'sending' ||
+                 item.status === 'pending')             ? 'enviando' : c.status;
+              if (mapped === c.status) return c;
+              changed = true;
+              return { ...c, status: mapped, erro: item.error_message ?? c.erro };
+            });
+            return changed ? next : prev;
+          });
+
+          // Persiste ultima_mensagem + ultima_mensagem_data no Supabase.
+          // Usa c.telefone (raw) para bater com contacts.telefone no Supabase.
+          newlySent.forEach(c => {
+            updateContactMessage(c.telefone, c.mensagemIA).catch(() => {});
+          });
+        })
+        .catch(() => {});
+    };
+
+    syncItemStatuses(); // imediato
+
+    if (activeSession.status === 'running') {
+      // Polling a cada 3s enquanto rodando
+      const interval = setInterval(syncItemStatuses, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [activeSession?.id, activeSession?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addToExcluded = useCallback((ids: string[]) => {
     setExcludedIds(prev => {
@@ -185,6 +216,7 @@ export function Dashboard() {
     contacts: savedContacts,
     loading: contactsLoading,
     saveContactsFromFile,
+    updateContactMessage,
   } = useContacts();
   const { config: llmConfig } = useLLMConfig();
   const { instances: whatsappInstances } = useWhatsAppInstances();
@@ -441,55 +473,59 @@ export function Dashboard() {
   return <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <img src="/blitzar-logo.png" alt="Blitzar Labs" className="h-10 object-contain" />
-              <div>
-                <h1 className="text-xl font-bold text-foreground">Blitzar Labs - Disparador</h1>
-                <p className="text-sm text-muted-foreground">Disparos B2B com IA Anti-Bloqueio</p>
+        <div className="container mx-auto px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {/* Logo + título */}
+            <div className="flex items-center gap-2 min-w-0">
+              <img src="/blitzar-logo.png" alt="Blitzar Labs" className="h-8 object-contain shrink-0" />
+              <div className="hidden sm:block min-w-0">
+                <h1 className="text-base font-bold text-foreground leading-tight">Blitzar Labs — Disparador</h1>
+                <p className="text-xs text-muted-foreground">Disparos B2B com IA Anti-Bloqueio</p>
               </div>
             </div>
-            
-            <div className="flex items-center gap-6">
-              <div className="flex items-center gap-4 text-sm">
-              <div 
-                className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"
-                onClick={() => navigate('/contacts')}
-                title="X na lista de disparo (clique para ver Contatos salvos)"
-              >
-                <Users className="h-4 w-4 text-muted-foreground" />
-                <span className="font-medium">{contacts.length}</span>
-                <span className="text-muted-foreground">na lista</span>
-              </div>
-                <div className="flex items-center gap-2">
+
+            {/* Stats + ações */}
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Contadores — ocultos em telas muito pequenas */}
+              <div className="hidden xs:flex items-center gap-3 text-sm">
+                <div
+                  className="flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity"
+                  onClick={() => navigate('/contacts')}
+                  title="Contatos na lista (clique para ver)"
+                >
+                  <Users className="h-4 w-4 text-muted-foreground" />
+                  <span className="font-medium">{contacts.length}</span>
+                  <span className="text-muted-foreground hidden md:inline">na lista</span>
+                </div>
+                <div className="flex items-center gap-1.5">
                   <CheckCircle2 className="h-4 w-4 text-success" />
                   <span className="font-medium text-success">{totalEnviados}</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
                   <XCircle className="h-4 w-4 text-destructive" />
                   <span className="font-medium text-destructive">{totalErros}</span>
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 border-l pl-4">
+              {/* Ações */}
+              <div className="flex items-center gap-2 border-l pl-3">
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setLLMConfigOpen(true)}
                   disabled={isRunning}
-                  className="gap-2"
+                  className="gap-1.5 h-8 text-xs"
                   title="Configurações de IA"
                 >
-                  <KeyRound className="h-4 w-4" />
-                  IA
+                  <KeyRound className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">IA</span>
                 </Button>
-                <span className="text-sm text-muted-foreground truncate max-w-[150px]">
+                <span className="text-xs text-muted-foreground truncate max-w-[120px] hidden lg:inline">
                   {user?.email}
                 </span>
-                <Button variant="ghost" size="sm" onClick={handleSignOut} disabled={isRunning} className="gap-2">
-                  <LogOut className="h-4 w-4" />
-                  Sair
+                <Button variant="ghost" size="sm" onClick={handleSignOut} disabled={isRunning} className="gap-1.5 h-8 text-xs">
+                  <LogOut className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Sair</span>
                 </Button>
               </div>
             </div>
