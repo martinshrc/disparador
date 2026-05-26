@@ -207,6 +207,14 @@ async function processDisparoSession(sessionId, instanceName) {
   const ctrl = { aborted: false };
   activeSessions.set(sessionId, ctrl);
 
+  // Busca user_id e mensagem_base da sessão para gravação no log
+  const { rows: [sessionMeta] } = await db.query(
+    `SELECT user_id, mensagem_base FROM disparo_sessions WHERE id = $1`,
+    [sessionId]
+  );
+  const sessionUserId   = sessionMeta?.user_id       ?? null;
+  const sessionMsgBase  = sessionMeta?.mensagem_base ?? '';
+
   try {
     while (!ctrl.aborted) {
       // Pega o próximo item pendente, em ordem
@@ -264,6 +272,53 @@ async function processDisparoSession(sessionId, instanceName) {
           `UPDATE disparo_sessions SET sent = sent + 1, updated_at = NOW() WHERE id = $1`,
           [sessionId]
         );
+
+        // Atualiza blitzar_leads (status + contadores) e grava no dispatch_log
+        // Wrap em try-catch para não interromper o disparo se o lead não estiver no pool
+        if (sessionUserId) {
+          try {
+            // Normaliza telefone para comparação (remove não-dígitos)
+            const telNorm = String(item.telefone).replace(/\D/g, '');
+
+            await db.query(
+              `UPDATE blitzar_leads bl
+               SET status_lead         = 'contactado',
+                   ultimo_disparo_at   = NOW(),
+                   quantidade_disparos = quantidade_disparos + 1,
+                   ultima_mensagem     = $3,
+                   updated_at          = NOW()
+               FROM blitzar_leads_pool bp
+               WHERE bl.pool_lead_id = bp.id
+                 AND bl.user_id = $1
+                 AND (regexp_replace(bp.telefone,           '\\D','','g') = $2
+                   OR regexp_replace(bp.telefone_secundario,'\\D','','g') = $2)`,
+              [sessionUserId, telNorm, item.mensagem]
+            );
+
+            await db.query(
+              `INSERT INTO blitzar_dispatch_log
+                 (user_id, lead_id, empresa, cnpj, telefone, mensagem_base, mensagem_ia, instance_name, status)
+               SELECT $1,
+                      bl.id,
+                      $3,
+                      bp.cnpj,
+                      $4,
+                      $5,
+                      $6,
+                      $7,
+                      'enviado'
+               FROM blitzar_leads_pool bp
+               LEFT JOIN blitzar_leads bl
+                      ON bl.pool_lead_id = bp.id AND bl.user_id = $1
+               WHERE regexp_replace(bp.telefone,           '\\D','','g') = $2
+                  OR regexp_replace(bp.telefone_secundario,'\\D','','g') = $2
+               LIMIT 1`,
+              [sessionUserId, telNorm, item.empresa, item.telefone, sessionMsgBase, item.mensagem, instanceName]
+            );
+          } catch (logErr) {
+            console.warn(`[disparo] Falha ao gravar log do lead (telefone ${item.telefone}):`, logErr.message);
+          }
+        }
       } catch (err) {
         await db.query(
           `UPDATE disparo_items SET status = 'error', error_message = $2 WHERE id = $1`,
