@@ -231,12 +231,12 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemov
       <div className="space-y-2">
         {/* Linha 1: busca + filtros de contato + segmento + botão */}
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
-            <div className="relative w-full sm:w-52">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
               <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
                 placeholder="Buscar empresa ou telefone..."
-                className="pl-7 h-7 text-xs w-full"
+                className="pl-7 h-7 text-xs w-52"
                 value={search}
                 onChange={e => { setSearch(e.target.value); setCurrentPage(1); }}
               />
@@ -247,13 +247,11 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemov
                 <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{contacts.length}</Badge>
               </Button>
               <Button variant={filter === 'primeiro' ? 'default' : 'outline'} size="sm" className="h-7 text-xs" onClick={() => handleFilterChange('primeiro')}>
-                <span className="hidden sm:inline">Primeiro contato</span>
-                <span className="sm:hidden">1º</span>
+                Primeiro contato
                 <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{countPrimeiro}</Badge>
               </Button>
               <Button variant={filter === 'ja-enviou' ? 'default' : 'outline'} size="sm" className="h-7 text-xs" onClick={() => handleFilterChange('ja-enviou')}>
-                <span className="hidden sm:inline">Já enviou</span>
-                <span className="sm:hidden">Enviou</span>
+                Já enviou
                 <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{countJaEnviou}</Badge>
               </Button>
             </div>
@@ -277,11 +275,9 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemov
           <div className="flex items-center gap-2">
             <AlertDialog>
               <AlertDialogTrigger asChild>
-                <Button variant="outline" size="sm" disabled={isRunning || filteredContacts.length === 0} className="gap-1.5 h-7 text-xs">
+                <Button variant="outline" size="sm" disabled={isRunning || filteredContacts.length === 0} className="gap-2 h-7 text-xs">
                   <RotateCcw className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">Reenviar selecionados</span>
-                  <span className="sm:hidden">Reenviar</span>
-                  ({filteredContacts.length})
+                  Reenviar selecionados ({filteredContacts.length})
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
