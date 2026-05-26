@@ -234,11 +234,9 @@ async function processDisparoSession(sessionId, instanceName) {
         const headers = { 'Content-Type': 'application/json' };
         if (N8N_WEBHOOK_SECRET) headers['x-webhook-secret'] = N8N_WEBHOOK_SECRET;
 
-        // Timeout de 120s — o N8N faz Wait(intervalo_ms até 25s) + Wait random(2-10s)
-        // antes de responder ao webhook, então 30s era insuficiente e gerava falsos erros.
-        // Fix definitivo: configurar o nó Webhook do N8N com responseMode "immediately"
-        // (adicionar nó "Respond to Webhook" antes dos Waits no fluxo Disparo.json).
-        const signal = AbortSignal.timeout ? AbortSignal.timeout(120000) : undefined;
+        // Timeout de 30s para o N8N responder (agora que os Waits foram removidos do fluxo,
+        // o N8N só envia a mensagem e responde — deve concluir em poucos segundos).
+        const signal = AbortSignal.timeout ? AbortSignal.timeout(30000) : undefined;
 
         const resp = await fetch(N8N_WEBHOOK_URL, {
           method: 'POST',
@@ -277,8 +275,11 @@ async function processDisparoSession(sessionId, instanceName) {
         );
       }
 
-      // Intervalo agora é gerenciado pelo n8n (Wait frontend + Wait random 2-10s)
-      // Não há sleep aqui para evitar duplicidade
+      // Intervalo entre mensagens gerenciado aqui (Wait nodes removidos do N8N).
+      // intervalo_ms já é aleatório por contato (gerado no frontend pelo usuário).
+      if (!ctrl.aborted) {
+        await sleep(item.intervalo_ms);
+      }
     }
   } catch (fatalErr) {
     console.error(`[disparo] Erro fatal na sessão ${sessionId}:`, fatalErr);
