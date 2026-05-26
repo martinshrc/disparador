@@ -309,7 +309,7 @@ async function processDisparoSession(sessionId, instanceName) {
             await db.query(
               `INSERT INTO blitzar_dispatch_log
                  (user_id, lead_id, empresa, cnpj, telefone, mensagem_base, mensagem_ia, instance_name, status)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'enviado')`,
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'success')`,
               [sessionUserId, poolRow?.lead_id || null, item.empresa, poolRow?.cnpj || null,
                item.telefone, sessionMsgBase, item.mensagem, instanceName]
             );
@@ -318,14 +318,24 @@ async function processDisparoSession(sessionId, instanceName) {
           }
         }
       } catch (err) {
+        const errMsg = String(err.message).slice(0, 500);
         await db.query(
           `UPDATE disparo_items SET status = 'error', error_message = $2 WHERE id = $1`,
-          [item.id, String(err.message).slice(0, 500)]
+          [item.id, errMsg]
         );
         await db.query(
           `UPDATE disparo_sessions SET errors = errors + 1, updated_at = NOW() WHERE id = $1`,
           [sessionId]
         );
+        // Loga o erro no dispatch_log para aparecer no histórico
+        if (sessionUserId) {
+          db.query(
+            `INSERT INTO blitzar_dispatch_log
+               (user_id, empresa, telefone, mensagem_base, mensagem_ia, instance_name, status, error_message)
+             VALUES ($1, $2, $3, $4, $5, $6, 'error', $7)`,
+            [sessionUserId, item.empresa, item.telefone, sessionMsgBase, item.mensagem, instanceName, errMsg]
+          ).catch(() => {});
+        }
       }
 
       // Intervalo entre mensagens gerenciado aqui (Wait nodes removidos do N8N).
