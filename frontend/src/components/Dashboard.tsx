@@ -216,11 +216,17 @@ export function Dashboard() {
             return changed ? next : prev;
           });
 
-          // Persiste ultima_mensagem + ultima_mensagem_data no Supabase para enviados.
+          // Persiste ultima_mensagem + ultima_mensagem_data para enviados.
           // Histórico de disparo agora é gravado pelo backend em blitzar_dispatch_log.
           newlySent.forEach(c => {
             updateContactMessage(c.telefone, c.mensagemIA).catch(() => {});
           });
+
+          // Remove leads com erro da lista de disparo (oculta via excludedIds/localStorage).
+          // O contato permanece no banco — apenas sai da fila visual.
+          if (newlyErrored.length > 0) {
+            addToExcluded(newlyErrored.map(c => c.id));
+          }
         })
         .catch(() => {});
     };
