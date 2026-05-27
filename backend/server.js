@@ -711,26 +711,48 @@ app.post('/api/disparo/start', async (req, res) => {
     );
   }
 
-  // Normaliza e valida telefones antes de criar os itens
-  // Neste ponto não temos o estado de cada empresa, mas a normalizePhone ainda:
-  //   • remove máscara e adiciona prefixo "55" se ausente
-  //   • insere DDD quando o número vem sem DDD mas com "55" (ex: "55999999999")
-  //   • rejeita DDDs inexistentes ou comprimentos inválidos
-  const processedContacts = contacts.map((c) => {
-    const original    = String(c.telefone || '');
-    const phoneResult = normalizePhone(original, null);
+  // Normaliza e valida telefones antes de criar os itens.
+  // Fallback: se falhar sem estado, busca o estado em blitzar_leads_pool pelo telefone
+  // (cobre leads já coletados com "55" mas sem DDD, ex: "55999999999").
+  const processedContacts = await Promise.all(contacts.map(async (c) => {
+    const original = String(c.telefone || '');
+    let phoneResult = normalizePhone(original, null);
+
+    if (!phoneResult) {
+      // Tenta recuperar o estado do pool para inferir DDD
+      try {
+        const digitsOnly = original.replace(/\D/g, '');
+        const { rows } = await db.query(
+          `SELECT estado FROM blitzar_leads_pool
+           WHERE regexp_replace(COALESCE(telefone,           ''), '\\D','','g') = $1
+              OR regexp_replace(COALESCE(telefone_secundario,''), '\\D','','g') = $1
+           LIMIT 1`,
+          [digitsOnly]
+        );
+        if (rows[0]?.estado) {
+          phoneResult = normalizePhone(original, rows[0].estado);
+          if (phoneResult) {
+            console.log(`[disparo] Telefone corrigido via pool: "${original}" → "${phoneResult.normalized}" (estado: ${rows[0].estado})`);
+          }
+        }
+      } catch (lookupErr) {
+        console.warn(`[disparo] Falha no lookup de estado para "${original}":`, lookupErr.message);
+      }
+    }
+
     if (!phoneResult) {
       console.warn(`[disparo] Telefone inválido: "${original}" (empresa: ${c.empresa})`);
     } else if (phoneResult.warning) {
       console.log(`[disparo] Telefone normalizado: "${original}" → "${phoneResult.normalized}" — ${phoneResult.warning}`);
     }
+
     return {
       ...c,
       telefoneOriginal: original,
       telefone:         phoneResult?.normalized ?? original,
       _phoneInvalid:    !phoneResult,
     };
-  });
+  }));
 
   const preErrorCount = processedContacts.filter(c => c._phoneInvalid).length;
 
