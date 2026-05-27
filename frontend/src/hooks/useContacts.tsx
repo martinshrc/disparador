@@ -1,8 +1,17 @@
+/**
+ * useContacts — fonte de dados: PostgreSQL VPS (via backend API).
+ * Auth permanece no Supabase; apenas a tabela contacts foi migrada para o VPS.
+ *
+ * Migração automática (uma única vez por usuário):
+ *   Se o VPS retornar 0 contatos e o Supabase ainda tiver contatos,
+ *   faz bulk-insert no VPS e seta a flag `contacts_migrated_<user_id>` no localStorage.
+ */
+
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
-import { DatabaseError, getErrorMessage, getErrorDetails } from '@/lib/errors';
-import { withRetry, RetryConfigs } from '@/lib/retry';
+import { apiClient } from '@/lib/apiClient';
+import { DatabaseError, getErrorMessage } from '@/lib/errors';
 
 export interface SavedContact {
   id: string;
@@ -19,6 +28,35 @@ export function useContacts() {
   const [loading, setLoading] = useState(true);
   const { user } = useAuth();
 
+  // ─── Migração única do Supabase → VPS ──────────────────────────────────────
+  async function migrateFromSupabaseIfNeeded(userId: string): Promise<void> {
+    const flagKey = `contacts_migrated_${userId}`;
+    if (localStorage.getItem(flagKey)) return; // já migrou
+
+    try {
+      const { data } = await supabase
+        .from('contacts')
+        .select('empresa, telefone')
+        .order('created_at', { ascending: true });
+
+      if (!data || data.length === 0) {
+        localStorage.setItem(flagKey, '1');
+        return;
+      }
+
+      await apiClient.post('/api/contacts/bulk', {
+        user_id: userId,
+        contacts: data,
+      });
+
+      localStorage.setItem(flagKey, '1');
+      console.log(`[contacts] Migração Supabase → VPS: ${data.length} contatos importados.`);
+    } catch (err) {
+      console.warn('[contacts] Migração automática falhou (será tentada novamente):', err);
+    }
+  }
+
+  // ─── Fetch do VPS ───────────────────────────────────────────────────────────
   const fetchContacts = useCallback(async () => {
     if (!user) {
       setContacts([]);
@@ -28,166 +66,111 @@ export function useContacts() {
 
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('contacts')
-        .select('*')
-        .order('created_at', { ascending: false });
+      // Migração automática na primeira carga (só roda uma vez)
+      await migrateFromSupabaseIfNeeded(user.id);
 
-      if (error) {
-        const errorDetails = getErrorDetails(error);
-        console.error('Error fetching contacts:', errorDetails);
-        setContacts([]);
-      } else {
-        setContacts(data || []);
-      }
-    } catch (error) {
-      const errorDetails = getErrorDetails(error);
-      console.error('Unexpected error fetching contacts:', errorDetails);
+      const r = await apiClient.get(`/api/contacts?user_id=${encodeURIComponent(user.id)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data: SavedContact[] = await r.json();
+      setContacts(data);
+    } catch (err) {
+      console.error('[contacts] Erro ao carregar contatos:', err);
       setContacts([]);
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     fetchContacts();
   }, [fetchContacts]);
 
-  const saveContact = async (empresa: string, telefone: string) => {
-    if (!user) {
-      throw new DatabaseError('Usuário não autenticado');
-    }
+  // ─── saveContact — upsert de contato único ──────────────────────────────────
+  const saveContact = async (empresa: string, telefone: string): Promise<SavedContact> => {
+    if (!user) throw new DatabaseError('Usuário não autenticado');
+    if (!empresa || !telefone) throw new DatabaseError('Empresa e telefone são obrigatórios');
 
-    if (!empresa || !telefone) {
-      throw new DatabaseError('Empresa e telefone são obrigatórios');
-    }
+    const r = await apiClient.post('/api/contacts/bulk', {
+      user_id: user.id,
+      contacts: [{ empresa: empresa.trim(), telefone: telefone.trim() }],
+    });
+    if (!r.ok) throw new DatabaseError(`Erro ao salvar contato: HTTP ${r.status}`);
 
-    try {
-      const { data, error } = await supabase
-        .from('contacts')
-        .upsert(
-          {
-            user_id: user.id,
-            empresa: empresa.trim(),
-            telefone: telefone.trim(),
-          },
-          { onConflict: 'user_id,telefone' }
-        )
-        .select()
-        .single();
-
-      if (error) {
-        throw new DatabaseError(`Erro ao salvar contato: ${getErrorMessage(error)}`, error);
-      }
-
-      return data;
-    } catch (error) {
-      if (error instanceof DatabaseError) throw error;
-      throw new DatabaseError(`Erro inesperado ao salvar contato: ${getErrorMessage(error)}`, error);
-    }
+    // Retorna o contato recém salvo buscando pelo telefone
+    await fetchContacts();
+    const found = contacts.find(c => c.telefone === telefone.trim());
+    if (!found) throw new DatabaseError('Contato salvo mas não encontrado após inserção');
+    return found;
   };
 
-  const updateContactMessage = async (telefone: string, mensagem: string) => {
-    if (!user) return null;
-
-    const { data, error } = await supabase
-      .from('contacts')
-      .update({
-        ultima_mensagem: mensagem,
-        ultima_mensagem_data: new Date().toISOString(),
-      })
-      .eq('user_id', user.id)
-      .eq('telefone', telefone)
-      .select()
-      .single();
-
-    if (error) {
-      console.error('Error updating contact message:', error);
-      return null;
-    }
-
-    return data;
-  };
-
+  // ─── saveContactsFromFile — upsert em lote ──────────────────────────────────
   const saveContactsFromFile = async (contactsList: { empresa: string; telefone: string }[]) => {
     if (!user) throw new DatabaseError('Usuário não autenticado');
     if (!contactsList?.length) return;
 
-    const seen = new Set<string>();
-    const contactsToInsert = contactsList
-      .filter(c => c.empresa && c.telefone)
-      .map((c) => ({
-        user_id: user.id,
-        empresa: c.empresa.trim(),
-        telefone: c.telefone.trim(),
-      }))
-      .filter(c => {
-        const key = `${c.user_id}:${c.telefone}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
+    const valid = contactsList.filter(c => c.empresa && c.telefone);
+    if (valid.length === 0) throw new DatabaseError('Nenhum contato válido para salvar');
 
-    if (contactsToInsert.length === 0) {
-      throw new DatabaseError('Nenhum contato válido para salvar');
-    }
+    const r = await apiClient.post('/api/contacts/bulk', {
+      user_id: user.id,
+      contacts: valid,
+    });
 
-    const retryResult = await withRetry(
-      async () => {
-        const { error } = await supabase
-          .from('contacts')
-          .upsert(contactsToInsert, { onConflict: 'user_id,telefone' });
-
-        if (error) {
-          throw new DatabaseError(`Erro ao salvar contatos: ${getErrorMessage(error)}`, error);
-        }
-
-        return true;
-      },
-      {
-        ...RetryConfigs.database,
-        onRetry: (attempt, error) => {
-          console.warn(`Tentativa ${attempt} falhou, tentando novamente...`, error);
-        },
-      }
-    );
-
-    if (!retryResult.success) {
-      const error = retryResult.lastError;
-      if (error instanceof DatabaseError) throw error;
-      throw new DatabaseError(`Erro inesperado: ${retryResult.error || 'Erro desconhecido'}`, error);
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new DatabaseError(body.error || `Erro ao salvar contatos: HTTP ${r.status}`);
     }
 
     await fetchContacts();
   };
 
-  const deleteContact = async (id: string) => {
+  // ─── updateContactMessage — persiste última mensagem enviada ────────────────
+  const updateContactMessage = async (telefone: string, mensagem: string) => {
+    if (!user) return null;
+
+    const r = await apiClient.patch('/api/contacts/message', {
+      user_id: user.id,
+      telefone,
+      mensagem,
+    });
+
+    if (!r.ok) {
+      console.error('[contacts] Erro ao atualizar mensagem:', r.status);
+      return null;
+    }
+
+    return await r.json();
+  };
+
+  // ─── deleteContact ──────────────────────────────────────────────────────────
+  const deleteContact = async (id: string): Promise<boolean> => {
     if (!user) return false;
 
-    const { error } = await supabase
-      .from('contacts')
-      .delete()
-      .eq('id', id);
+    const r = await apiClient.delete(
+      `/api/contacts/${id}?user_id=${encodeURIComponent(user.id)}`
+    );
 
-    if (error) {
-      console.error('Error deleting contact:', error);
+    if (!r.ok) {
+      console.error('[contacts] Erro ao excluir contato:', r.status);
       return false;
     }
 
-    await fetchContacts();
+    setContacts(prev => prev.filter(c => c.id !== id));
     return true;
   };
 
-  const updateContact = async (id: string, empresa: string, telefone: string) => {
+  // ─── updateContact — edita empresa e telefone ───────────────────────────────
+  const updateContact = async (id: string, empresa: string, telefone: string): Promise<boolean> => {
     if (!user) return false;
 
-    const { error } = await supabase
-      .from('contacts')
-      .update({ empresa, telefone })
-      .eq('id', id);
+    const r = await apiClient.put(`/api/contacts/${id}`, {
+      user_id: user.id,
+      empresa,
+      telefone,
+    });
 
-    if (error) {
-      console.error('Error updating contact:', error);
+    if (!r.ok) {
+      console.error('[contacts] Erro ao atualizar contato:', r.status);
       return false;
     }
 

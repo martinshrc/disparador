@@ -91,7 +91,7 @@ app.use(cors({
     cb(new Error('CORS: origem não permitida'));
   },
   allowedHeaders: ['Content-Type', 'x-api-key'],
-  methods: ['GET', 'POST', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   preflightContinue: false,
   optionsSuccessStatus: 200,
 }));
@@ -1004,10 +1004,128 @@ app.post('/api/contacts/prospeccao', async (req, res) => {
   }
 });
 
+// ─── Contacts VPS — tabela + endpoints ───────────────────────────────────────
+/**
+ * Garante que a tabela contacts existe no VPS.
+ * Substitui a tabela contacts do Supabase — auth continua no Supabase.
+ * Idempotente: CREATE TABLE IF NOT EXISTS.
+ */
+async function ensureContactsTable() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS contacts (
+      id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id              TEXT NOT NULL,
+      empresa              TEXT NOT NULL,
+      telefone             TEXT NOT NULL,
+      ultima_mensagem      TEXT,
+      ultima_mensagem_data TIMESTAMPTZ,
+      created_at           TIMESTAMPTZ DEFAULT NOW(),
+      updated_at           TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, telefone)
+    )
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_contacts_user ON contacts(user_id, created_at DESC)`);
+}
+
+// GET /api/contacts?user_id=
+app.get('/api/contacts', async (req, res) => {
+  const { user_id } = req.query;
+  if (!user_id) return res.status(400).json({ error: 'user_id obrigatório' });
+  const { rows } = await db.query(
+    `SELECT id, user_id, empresa, telefone, ultima_mensagem, ultima_mensagem_data, created_at, updated_at
+     FROM contacts
+     WHERE user_id = $1
+     ORDER BY created_at DESC`,
+    [user_id]
+  );
+  res.json(rows);
+});
+
+// POST /api/contacts/bulk — upsert em lote; usado por saveContactsFromFile e migração
+// Body: { user_id, contacts: [{empresa, telefone}] }
+app.post('/api/contacts/bulk', async (req, res) => {
+  const { user_id, contacts: list } = req.body;
+  if (!user_id || !Array.isArray(list) || list.length === 0) {
+    return res.status(400).json({ error: 'user_id e contacts[] obrigatórios' });
+  }
+
+  // Deduplica por telefone antes de inserir
+  const seen = new Set();
+  const deduped = list.filter(c => {
+    const key = String(c.telefone || '').trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return c.empresa;
+  });
+
+  if (deduped.length === 0) return res.json({ count: 0 });
+
+  const params = [];
+  const valueParts = deduped.map((c, i) => {
+    const base = i * 3;
+    params.push(user_id, String(c.empresa).trim(), String(c.telefone).trim());
+    return `($${base + 1}, $${base + 2}, $${base + 3})`;
+  });
+
+  await db.query(
+    `INSERT INTO contacts (user_id, empresa, telefone)
+     VALUES ${valueParts.join(',')}
+     ON CONFLICT (user_id, telefone)
+     DO UPDATE SET empresa = EXCLUDED.empresa, updated_at = NOW()`,
+    params
+  );
+
+  res.json({ count: deduped.length });
+});
+
+// PATCH /api/contacts/message — atualiza última mensagem enviada
+// Body: { user_id, telefone, mensagem }
+app.patch('/api/contacts/message', async (req, res) => {
+  const { user_id, telefone, mensagem } = req.body;
+  if (!user_id || !telefone) return res.status(400).json({ error: 'user_id e telefone obrigatórios' });
+  const { rows: [row] } = await db.query(
+    `UPDATE contacts
+     SET ultima_mensagem = $3, ultima_mensagem_data = NOW(), updated_at = NOW()
+     WHERE user_id = $1 AND telefone = $2
+     RETURNING *`,
+    [user_id, String(telefone), mensagem || null]
+  );
+  res.json(row ?? null);
+});
+
+// PUT /api/contacts/:id — atualiza empresa e/ou telefone
+// Body: { user_id, empresa, telefone }
+app.put('/api/contacts/:id', async (req, res) => {
+  const { id } = req.params;
+  const { user_id, empresa, telefone } = req.body;
+  if (!user_id) return res.status(400).json({ error: 'user_id obrigatório' });
+  const { rows: [row] } = await db.query(
+    `UPDATE contacts
+     SET empresa = $3, telefone = $4, updated_at = NOW()
+     WHERE id = $1 AND user_id = $2
+     RETURNING *`,
+    [id, user_id, String(empresa || '').trim(), String(telefone || '').trim()]
+  );
+  res.json(row ?? null);
+});
+
+// DELETE /api/contacts/:id?user_id=
+app.delete('/api/contacts/:id', async (req, res) => {
+  const { id } = req.params;
+  const { user_id } = req.query;
+  if (!user_id) return res.status(400).json({ error: 'user_id obrigatório' });
+  await db.query(
+    `DELETE FROM contacts WHERE id = $1 AND user_id = $2`,
+    [id, user_id]
+  );
+  res.json({ ok: true });
+});
+
 // ─── Startup ──────────────────────────────────────────────────────────────────
 const PORT = cfg('PORT') || 3001;
 app.listen(PORT, async () => {
   console.log(`✅ API server rodando em http://localhost:${PORT}`);
+  await ensureContactsTable();
   // Retoma sessões de disparo que estavam rodando antes do restart
   await resumePendingSessions();
 });
