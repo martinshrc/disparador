@@ -726,6 +726,9 @@ app.post('/api/leads/fetch', async (req, res) => {
   let saved = 0;
   let skipped = 0;
 
+  const lim = parseInt(String(limite));
+  let done = false;
+
   try {
     for await (const page of sdk.office.search({
       'status.id.in': [2],
@@ -733,27 +736,36 @@ app.post('/api/leads/fetch', async (req, res) => {
       'mainActivity.id.in': [parseInt(String(cnae))],
     })) {
       for (const office of page) {
-        if (saved >= parseInt(String(limite))) break;
+        // Para quando salvou o suficiente OU quando já processou lim resultados
+        // (evita continuar paginando em duplicatas e consumir créditos à toa)
+        if (saved >= lim || saved + skipped >= lim) { done = true; break; }
         try {
           const ok = await saveOffice(office);
           if (ok) {
             saved++;
-            send({ type: 'progress', saved, total: parseInt(String(limite)), nome: office.company?.name ?? '' });
+            send({ type: 'progress', saved, total: lim, nome: office.company?.name ?? '' });
           } else {
             skipped++;
           }
         } catch (e) {
-          if (e?.message?.includes('credit') || e?.status === 429) {
-            send({ type: 'key_exhausted', message: `Chave ${keyInfo.index} esgotou os créditos.` });
+          const msg = (e?.message ?? '').toLowerCase();
+          if (msg.includes('credit') || msg.includes('rate limit') || e?.status === 429) {
+            send({ type: 'key_exhausted', message: `Chave ${keyInfo.index} esgotou os créditos / rate limit.` });
+            done = true;
             break;
           }
           skipped++;
         }
       }
-      if (saved >= parseInt(String(limite))) break;
+      if (done || saved >= lim || saved + skipped >= lim) break;
     }
   } catch (e) {
-    send({ type: 'error', message: e.message });
+    const msg = (e?.message ?? '').toLowerCase();
+    if (msg.includes('rate limit') || e?.status === 429) {
+      send({ type: 'key_exhausted', message: `Rate limit atingido na Chave ${keyInfo.index}.` });
+    } else {
+      send({ type: 'error', message: e.message });
+    }
   }
 
   const updatedCredits = [];
