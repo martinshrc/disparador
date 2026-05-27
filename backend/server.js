@@ -120,6 +120,129 @@ app.use(express.json({ limit: '5mb' })); // batch pode ter muitos contatos
 // ─── Helpers gerais ───────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// ─── Validação / normalização de telefone brasileiro ─────────────────────────
+/**
+ * Mapa UF → DDDs válidos (fonte: ANATEL).
+ * Usado para:
+ *  1. Inferir DDD quando o número não o contém
+ *  2. Alertar quando o DDD informado não pertence ao estado da empresa
+ */
+const DDD_POR_ESTADO = {
+  AC: [68],
+  AL: [82],
+  AM: [92, 97],
+  AP: [96],
+  BA: [71, 73, 74, 75, 77],
+  CE: [85, 88],
+  DF: [61],
+  ES: [27, 28],
+  GO: [62, 64],
+  MA: [98, 99],
+  MG: [31, 32, 33, 34, 35, 37, 38],
+  MS: [67],
+  MT: [65, 66],
+  PA: [91, 93, 94],
+  PB: [83],
+  PE: [81, 87],
+  PI: [86, 89],
+  PR: [41, 42, 43, 44, 45, 46],
+  RJ: [21, 22, 24],
+  RN: [84],
+  RO: [69],
+  RR: [95],
+  RS: [51, 53, 54, 55],
+  SC: [47, 48, 49],
+  SE: [79],
+  SP: [11, 12, 13, 14, 15, 16, 17, 18, 19],
+  TO: [63],
+};
+
+/** Conjunto de todos os DDDs válidos do Brasil para consulta rápida */
+const ALL_VALID_DDDS = new Set(Object.values(DDD_POR_ESTADO).flat());
+
+/**
+ * Normaliza um número de telefone brasileiro para o formato somente-dígitos
+ * 55DDXXXXXXXX (12) ou 55DDXXXXXXXXX (13) — pronto para WhatsApp / N8N.
+ *
+ * Regras (em ordem de aplicação):
+ *  1. Remove todos os caracteres não-numéricos
+ *  2. Remove prefixo "55" se o restante tiver 8–11 dígitos (DDD+local ou só local)
+ *  3. Remove "0" inicial (discagem nacional antiga: 011...)
+ *  4. Com DDD explícito (10–11 dígitos): valida o DDD; alerta se diferente do estado
+ *  5. Sem DDD (8–9 dígitos): insere o DDD primário do estado — obrigatório ter `estado`
+ *  6. Valida comprimento do número local: 8 (fixo) ou 9 (celular)
+ *
+ * Exemplos de entrada aceita:
+ *   "(11) 99999-9999"  → "5511999999999"
+ *   "11 9999-9999"     → "551199999999"
+ *   "5511999999999"    → "5511999999999"  (já correto)
+ *   "55999999999"      → "5511999999999"  (55 sem DDD + estado SP)
+ *   "999999999"        → "5511999999999"  (sem prefixo + estado SP)
+ *
+ * @param {string|null} rawPhone  Número bruto (qualquer máscara)
+ * @param {string|null} estado    Sigla do estado ('SP', 'RJ'…) — obrigatório quando DDD ausente
+ * @returns {{ normalized: string, warning: string|null } | null}
+ *   null   = número inválido (deve ser descartado / marcado como erro)
+ *   objeto = { normalized: '5511999999999', warning: null | '<aviso>' }
+ */
+function normalizePhone(rawPhone, estado) {
+  if (!rawPhone) return null;
+
+  let d = String(rawPhone).replace(/\D/g, '');
+  if (!d) return null;
+
+  const uf        = estado ? String(estado).toUpperCase().trim() : null;
+  const stateDDDs = uf ? (DDD_POR_ESTADO[uf] ?? []) : [];
+  let warning     = null;
+
+  // Passo 1 — Remove prefixo de país "55"
+  // Só remove se o restante tiver entre 8 e 11 dígitos (formatos válidos pós-remoção).
+  // Isso cobre o caso em que o "55" está presente mas o DDD está faltando:
+  //   ex.: "55999999999" (11 chars) → remove 55 → "999999999" (9) → DDD inferido pelo estado
+  if (d.startsWith('55')) {
+    const rest = d.slice(2);
+    if (rest.length >= 8 && rest.length <= 11) {
+      d = rest;
+    }
+    // Se rest.length < 8 ou > 11, mantém d original — vai falhar na validação abaixo
+  }
+
+  // Passo 2 — Remove "0" inicial (discagem nacional: 011XXXXXXXX → 11XXXXXXXX)
+  if (d.startsWith('0') && d.length >= 11) {
+    d = d.slice(1);
+  }
+
+  // Passo 3 — Separar DDD e número local
+  let ddd, local;
+
+  if (d.length >= 10 && d.length <= 11) {
+    // Tem DDD explícito (2 dígitos) + número local (8 ou 9 dígitos)
+    ddd   = parseInt(d.slice(0, 2), 10);
+    local = d.slice(2);
+  } else if (d.length === 8 || d.length === 9) {
+    // Sem DDD — inferir pelo estado da empresa
+    if (stateDDDs.length === 0) return null; // sem estado → não é possível inferir
+    ddd     = stateDDDs[0];
+    local   = d;
+    warning = `DDD ausente; inferido ${ddd} (${uf})`;
+  } else {
+    return null; // comprimento inválido
+  }
+
+  // Passo 4 — Validar DDD
+  if (!ALL_VALID_DDDS.has(ddd)) return null;
+
+  // Passo 5 — Alertar (sem descartar) se DDD não pertence ao estado informado
+  if (uf && stateDDDs.length > 0 && !stateDDDs.includes(ddd)) {
+    warning = `DDD ${ddd} não pertence ao estado ${uf} (DDDs esperados: ${stateDDDs.join('/')})`;
+  }
+
+  // Passo 6 — Validar comprimento do número local: 8 = fixo, 9 = celular
+  if (local.length < 8 || local.length > 9) return null;
+
+  return { normalized: `55${ddd}${local}`, warning };
+}
+
 async function checkCredits(apiKey) {
   try {
     const sdk = new Cnpja({ apiKey });
@@ -150,6 +273,14 @@ async function saveOffice(office) {
   if (!cnpj || cnpj.length !== 14) return false;
   if (office.status?.id !== 2) return false;
 
+  // Normaliza e valida telefones usando o estado da empresa para inferir DDD ausente
+  const tel1Result = normalizePhone(phones[0]?.number, address.state);
+  const tel2Result = normalizePhone(phones[1]?.number, address.state);
+  if (tel1Result?.warning) console.log(`[leads] tel1 normalizado (${cnpj}): ${tel1Result.warning}`);
+  if (tel2Result?.warning) console.log(`[leads] tel2 normalizado (${cnpj}): ${tel2Result.warning}`);
+  if (!tel1Result && phones[0]?.number) console.log(`[leads] tel1 inválido descartado (${cnpj}): "${phones[0].number}"`);
+  if (!tel2Result && phones[1]?.number) console.log(`[leads] tel2 inválido descartado (${cnpj}): "${phones[1].number}"`);
+
   const { rowCount } = await db.query(
     `INSERT INTO blitzar_leads_pool
       (cnpj, razao_social, nome_fantasia, data_abertura, eh_matriz,
@@ -174,8 +305,8 @@ async function saveOffice(office) {
       mainActivity.id ?? null,
       mainActivity.text ?? null,
       JSON.stringify(sideActivities),
-      phones[0]?.number ?? null,
-      phones[1]?.number ?? null,
+      tel1Result?.normalized ?? null,
+      tel2Result?.normalized ?? null,
       emails[0]?.address ?? null,
       address.street ?? null,
       address.number ?? null,
@@ -580,6 +711,29 @@ app.post('/api/disparo/start', async (req, res) => {
     );
   }
 
+  // Normaliza e valida telefones antes de criar os itens
+  // Neste ponto não temos o estado de cada empresa, mas a normalizePhone ainda:
+  //   • remove máscara e adiciona prefixo "55" se ausente
+  //   • insere DDD quando o número vem sem DDD mas com "55" (ex: "55999999999")
+  //   • rejeita DDDs inexistentes ou comprimentos inválidos
+  const processedContacts = contacts.map((c) => {
+    const original    = String(c.telefone || '');
+    const phoneResult = normalizePhone(original, null);
+    if (!phoneResult) {
+      console.warn(`[disparo] Telefone inválido: "${original}" (empresa: ${c.empresa})`);
+    } else if (phoneResult.warning) {
+      console.log(`[disparo] Telefone normalizado: "${original}" → "${phoneResult.normalized}" — ${phoneResult.warning}`);
+    }
+    return {
+      ...c,
+      telefoneOriginal: original,
+      telefone:         phoneResult?.normalized ?? original,
+      _phoneInvalid:    !phoneResult,
+    };
+  });
+
+  const preErrorCount = processedContacts.filter(c => c._phoneInvalid).length;
+
   // Cria nova sessão
   const { rows: [session] } = await db.query(
     `INSERT INTO disparo_sessions (user_id, instance_name, mensagem_base, total)
@@ -588,33 +742,49 @@ app.post('/api/disparo/start', async (req, res) => {
     [user_id, instance_name, mensagem_base || '', contacts.length]
   );
 
-  // Insere todos os itens com query parametrizada (segura contra SQL injection)
-  if (contacts.length > 0) {
+  // Insere todos os itens — itens com telefone inválido já entram como 'error'
+  if (processedContacts.length > 0) {
     const params = [];
-    const valueParts = contacts.map((c, i) => {
-      const base = i * 6;
+    const valueParts = processedContacts.map((c, i) => {
+      const base     = i * 8;
+      const status   = c._phoneInvalid ? 'error' : 'pending';
+      const errMsg   = c._phoneInvalid
+        ? `Telefone inválido: "${c.telefoneOriginal}"`
+        : null;
       params.push(
         session.id,
         i,
         String(c.empresa  || ''),
         String(c.telefone || ''),
         String(c.mensagem || ''),
-        Number(c.intervalo_ms) || 10000
+        Number(c.intervalo_ms) || 10000,
+        status,
+        errMsg
       );
-      return `($${base+1}, $${base+2}, $${base+3}, $${base+4}, $${base+5}, $${base+6})`;
+      return `($${base+1},$${base+2},$${base+3},$${base+4},$${base+5},$${base+6},$${base+7},$${base+8})`;
     });
 
     await db.query(
-      `INSERT INTO disparo_items (session_id, position, empresa, telefone, mensagem, intervalo_ms)
+      `INSERT INTO disparo_items
+         (session_id, position, empresa, telefone, mensagem, intervalo_ms, status, error_message)
        VALUES ${valueParts.join(',')}`,
       params
     );
   }
 
+  // Pré-registra erros de telefone inválido no contador da sessão
+  if (preErrorCount > 0) {
+    await db.query(
+      `UPDATE disparo_sessions SET errors = $2 WHERE id = $1`,
+      [session.id, preErrorCount]
+    );
+    console.log(`[disparo] ${preErrorCount} contato(s) com telefone inválido marcados como erro antes do disparo.`);
+  }
+
   // Inicia processamento assíncrono (não bloqueia a resposta HTTP)
   processDisparoSession(session.id, instance_name).catch(console.error);
 
-  console.log(`[disparo] Sessão ${session.id} iniciada: ${contacts.length} contatos, instância ${instance_name}`);
+  console.log(`[disparo] Sessão ${session.id} iniciada: ${contacts.length} contatos (${preErrorCount} inválidos), instância ${instance_name}`);
   res.json({ session_id: session.id, total: contacts.length });
 });
 
