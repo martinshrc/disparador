@@ -170,11 +170,13 @@ const ALL_VALID_DDDS = new Set(Object.values(DDD_POR_ESTADO).flat());
  *  3. Remove "0" inicial (discagem nacional antiga: 011...)
  *  4. Com DDD explícito (10–11 dígitos): valida o DDD; alerta se diferente do estado
  *  5. Sem DDD (8–9 dígitos): insere o DDD primário do estado — obrigatório ter `estado`
- *  6. Valida comprimento do número local: 8 (fixo) ou 9 (celular)
+ *  6. Valida comprimento do número local: 8 ou 9 dígitos
+ *  7. Prefixo "9" para números de 8 dígitos (migração WhatsApp 2012-2016)
+ *     Garante que o número salvo bate com o remoteJid quando o lead responde.
  *
  * Exemplos de entrada aceita:
  *   "(11) 99999-9999"  → "5511999999999"
- *   "11 9999-9999"     → "551199999999"
+ *   "11 8143-0406"     → "5511981430406"  (9 adicionado ao local de 8 dígitos)
  *   "5511999999999"    → "5511999999999"  (já correto)
  *   "55999999999"      → "5511999999999"  (55 sem DDD + estado SP)
  *   "999999999"        → "5511999999999"  (sem prefixo + estado SP)
@@ -237,8 +239,16 @@ function normalizePhone(rawPhone, estado) {
     warning = `DDD ${ddd} não pertence ao estado ${uf} (DDDs esperados: ${stateDDDs.join('/')})`;
   }
 
-  // Passo 6 — Validar comprimento do número local: 8 = fixo, 9 = celular
+  // Passo 6 — Validar comprimento do número local
   if (local.length < 8 || local.length > 9) return null;
+
+  // Passo 7 — Normalizar para 9 dígitos (padrão WhatsApp brasileiro)
+  // O WhatsApp sempre retorna o remoteJid com 9 dígitos após o DDD, independente
+  // de como o número foi cadastrado. Números de 8 dígitos (pré-migração 2012-2016)
+  // recebem o "9" prefixado para garantir correspondência quando o lead responde.
+  if (local.length === 8) {
+    local = '9' + local;
+  }
 
   return { normalized: `55${ddd}${local}`, warning };
 }
