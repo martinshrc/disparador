@@ -483,7 +483,7 @@ export function Dashboard() {
   };
   return <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
+      <header style={{ top: 'var(--banner-h, 0px)' }} className="border-b bg-card/50 backdrop-blur-sm sticky z-40">
         <div className="container mx-auto px-4 py-3">
           <div className="flex items-center justify-between gap-2 min-w-0">
             <div className="flex items-center gap-2 sm:gap-3 min-w-0 shrink-0">

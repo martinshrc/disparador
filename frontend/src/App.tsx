@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -49,11 +49,30 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
  */
 function ProtectedShell({ children }: { children: React.ReactNode }) {
   const { activeSession, cancelSession, dismissSession } = useDisparoSession();
+  const bannerRef = useRef<HTMLDivElement>(null);
+
+  // Mantém --banner-h sincronizado com a altura real do banner (inclusive quando
+  // aparece a linha de erros, que aumenta a altura em mobile).
+  useEffect(() => {
+    if (!activeSession) {
+      document.documentElement.style.removeProperty('--banner-h');
+      return;
+    }
+    const el = bannerRef.current;
+    if (!el) return;
+    const update = () => {
+      document.documentElement.style.setProperty('--banner-h', `${el.offsetHeight}px`);
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [activeSession]);
 
   return (
     <>
       {activeSession && (
-        <div className="fixed top-0 left-0 right-0 z-50 flex justify-center px-4 pt-2">
+        <div ref={bannerRef} className="fixed top-0 left-0 right-0 z-[60] flex justify-center px-4 pt-2 pb-1">
           <div className="w-full max-w-3xl">
             <DispatchBanner
               session={activeSession}
@@ -63,10 +82,7 @@ function ProtectedShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       )}
-      {/* Empurra o conteúdo para baixo quando o banner está visível */}
-      <div className={activeSession ? 'pt-14 sm:pt-12' : undefined}>
-        {children}
-      </div>
+      {children}
     </>
   );
 }
