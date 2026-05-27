@@ -52,14 +52,22 @@ export function DispatchBanner({ session, onCancel, onDismiss }: DispatchBannerP
         </div>
 
         <div className="flex items-center gap-2 mt-1">
-          <Progress
-            value={progress}
-            className="h-1.5 flex-1"
-          />
+          <Progress value={progress} className="h-1.5 flex-1" />
           <span className="text-xs text-muted-foreground whitespace-nowrap">
-            {sent} enviados · {errors > 0 && `${errors} erros · `}{total} total
+            {sent} enviado{sent !== 1 ? 's' : ''}
+            {errors > 0 && (
+              <span className="text-destructive font-medium"> · {errors} erro{errors !== 1 ? 's' : ''}</span>
+            )}
+            {' '}· {total} total
           </span>
         </div>
+
+        {/* Resumo destacado ao concluir com erros */}
+        {(isCompleted || isCancelled) && errors > 0 && (
+          <p className="text-xs text-destructive mt-1 font-medium">
+            {errors} lead{errors !== 1 ? 's' : ''} com erro foram removidos da lista de disparo.
+          </p>
+        )}
       </div>
 
       {/* Ações */}

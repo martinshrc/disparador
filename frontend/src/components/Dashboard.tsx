@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Play, Square, Users, CheckCircle2, XCircle, LogOut, History, KeyRound, ListOrdered, Search, Loader2, RotateCcw, Upload } from 'lucide-react';
+import { Play, Square, Users, CheckCircle2, XCircle, LogOut, History, KeyRound, ListOrdered, Search, Loader2, Upload } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -446,13 +446,6 @@ export function Dashboard() {
     addToExcluded(ids);
   };
 
-  /** Limpa as exclusões e recarrega a lista completa do Supabase. */
-  const handleRestoreAll = () => {
-    setExcludedIds(new Set());
-    if (user?.id) localStorage.removeItem(`disparador_excluded_${user.id}`);
-    enrichedPhonesRef.current = new Set(); // força re-enriquecimento após reload
-    setContacts([]); // reseta a lista → o useEffect recarrega do Supabase sem filtros
-  };
   const handleFileLoaded = async (newContacts: ContactRow[]) => {
     if (newContacts.length === 0) return;
 
@@ -891,26 +884,8 @@ export function Dashboard() {
                     {contacts.length > 0
                       ? `${contacts.length} contatos carregados.`
                       : 'Use Coletar leads para adicionar contatos à lista de disparo.'}
-                    {excludedIds.size > 0 && (
-                      <span className="ml-2 text-muted-foreground/70">
-                        ({excludedIds.size} oculto{excludedIds.size !== 1 ? 's' : ''} desta lista)
-                      </span>
-                    )}
                   </CardDescription>
                 </div>
-                {excludedIds.size > 0 && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleRestoreAll}
-                    disabled={isRunning}
-                    className="shrink-0 gap-2 text-muted-foreground hover:text-foreground"
-                    title={`Restaurar ${excludedIds.size} contato(s) oculto(s) na lista`}
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    Restaurar lista completa
-                  </Button>
-                )}
               </div>
             </CardHeader>
             <CardContent>
