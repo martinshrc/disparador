@@ -53,16 +53,18 @@ function ProtectedShell({ children }: { children: React.ReactNode }) {
   return (
     <>
       {activeSession && (
-        <div className="fixed top-0 left-0 right-0 z-50 px-4 pt-2">
-          <DispatchBanner
-            session={activeSession}
-            onCancel={() => cancelSession(activeSession.id)}
-            onDismiss={dismissSession}
-          />
+        <div className="fixed top-0 left-0 right-0 z-50 flex justify-center px-4 pt-2">
+          <div className="w-full max-w-3xl">
+            <DispatchBanner
+              session={activeSession}
+              onCancel={() => cancelSession(activeSession.id)}
+              onDismiss={dismissSession}
+            />
+          </div>
         </div>
       )}
       {/* Empurra o conteúdo para baixo quando o banner está visível */}
-      <div className={activeSession ? 'pt-16' : undefined}>
+      <div className={activeSession ? 'pt-14 sm:pt-12' : undefined}>
         {children}
       </div>
     </>

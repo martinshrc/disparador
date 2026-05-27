@@ -21,60 +21,52 @@ export function DispatchBanner({ session, onCancel, onDismiss }: DispatchBannerP
   return (
     <div
       className={[
-        'border rounded-lg px-4 py-3 flex items-center gap-4 transition-colors',
+        'border rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 flex items-center gap-3 sm:gap-4 transition-colors shadow-md',
         isRunning   && 'bg-primary/10 border-primary/30',
         isCompleted && 'bg-success/10 border-success/30',
         isCancelled && 'bg-muted/60  border-border',
       ].filter(Boolean).join(' ')}
     >
-      {/* Ícone de status */}
-      {isRunning && (
-        <Activity className="h-4 w-4 text-primary animate-pulse shrink-0" />
-      )}
-      {isCompleted && (
-        <CheckCircle2 className="h-4 w-4 text-success shrink-0" />
-      )}
-      {isCancelled && (
-        <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />
-      )}
+      {/* Ícone */}
+      {isRunning   && <Activity    className="h-4 w-4 text-primary animate-pulse shrink-0" />}
+      {isCompleted && <CheckCircle2 className="h-4 w-4 text-success shrink-0" />}
+      {isCancelled && <XCircle      className="h-4 w-4 text-muted-foreground shrink-0" />}
 
-      {/* Texto + barra */}
+      {/* Conteúdo central */}
       <div className="flex-1 min-w-0">
+        {/* Linha 1: título + instância + contadores */}
         <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-sm font-medium">
+          <span className="text-sm font-medium leading-tight">
             {isRunning   && 'Disparo em andamento'}
             {isCompleted && 'Disparo concluído'}
             {isCancelled && 'Disparo cancelado'}
-          </p>
-          <span className="text-xs text-muted-foreground">
-            via {instance_name}
           </span>
-        </div>
-
-        <div className="flex items-center gap-2 mt-1">
-          <Progress value={progress} className="h-1.5 flex-1" />
-          <span className="text-xs text-muted-foreground whitespace-nowrap">
-            {sent} enviado{sent !== 1 ? 's' : ''}
+          <span className="text-xs text-muted-foreground hidden sm:inline">via {instance_name}</span>
+          <span className="text-xs text-muted-foreground">
+            {sent}/{total}
             {errors > 0 && (
               <span className="text-destructive font-medium"> · {errors} erro{errors !== 1 ? 's' : ''}</span>
             )}
-            {' '}· {total} total
           </span>
         </div>
 
-        {/* Resumo destacado ao concluir com erros */}
+        {/* Barra de progresso */}
+        <Progress value={progress} className="h-1 mt-1.5" />
+
+        {/* Resumo pós-disparo */}
         {(isCompleted || isCancelled) && errors > 0 && (
-          <p className="text-xs text-destructive mt-1 font-medium">
-            {errors} lead{errors !== 1 ? 's' : ''} com erro foram removidos da lista de disparo.
+          <p className="text-xs text-destructive mt-1 font-medium leading-tight">
+            {errors} lead{errors !== 1 ? 's' : ''} com erro removido{errors !== 1 ? 's' : ''} da lista.
           </p>
         )}
       </div>
 
       {/* Ações */}
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-1.5 shrink-0">
         {isRunning && (
-          <Button size="sm" variant="destructive" onClick={onCancel}>
-            Cancelar disparo
+          <Button size="sm" variant="destructive" className="h-7 text-xs px-2.5" onClick={onCancel}>
+            <span className="hidden sm:inline">Cancelar disparo</span>
+            <span className="sm:hidden">Cancelar</span>
           </Button>
         )}
         {!isRunning && (

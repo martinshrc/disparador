@@ -100,30 +100,52 @@ export default function HistoryPage() {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between gap-3 min-w-0">
-            <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+        <div className="container mx-auto px-4 py-3">
+          <div className="flex items-center justify-between gap-2">
+            {/* Esquerda: voltar + título */}
+            <div className="flex items-center gap-2 min-w-0">
               <Button variant="ghost" size="icon" asChild className="shrink-0">
                 <Link to="/">
                   <ArrowLeft className="h-5 w-5" />
                 </Link>
               </Button>
-              <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-primary flex items-center justify-center shrink-0">
-                  <History className="h-5 w-5 text-primary-foreground" />
-                </div>
-                <div className="min-w-0">
-                  <h1 className="text-base sm:text-xl font-bold text-foreground leading-tight">Histórico de Envios</h1>
-                  <p className="text-xs sm:text-sm text-muted-foreground truncate">
-                    {history.length} registros • {successCount} sucesso • {errorCount} erro{cancelledCount > 0 ? ` • ${cancelledCount} cancelado` : ''}
-                  </p>
+              <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
+                <History className="h-4 w-4 text-primary-foreground" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-base font-bold text-foreground leading-tight">Histórico de Envios</h1>
+                {/* Stats em linha, quebram em wrap se necessário */}
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                  <span className="text-xs text-muted-foreground">{history.length} registros</span>
+                  {successCount > 0 && (
+                    <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                      {successCount} sucesso
+                    </span>
+                  )}
+                  {errorCount > 0 && (
+                    <span className="text-xs text-destructive font-medium">
+                      {errorCount} erro{errorCount !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                  {cancelledCount > 0 && (
+                    <span className="text-xs text-muted-foreground">
+                      {cancelledCount} cancelado{cancelledCount !== 1 ? 's' : ''}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
-            <Button onClick={handleExport} className="gap-2 shrink-0">
-              <Download className="h-4 w-4" />
-              <span className="hidden sm:inline">Exportar</span>
-            </Button>
+
+            {/* Direita: exportar + refresh */}
+            <div className="flex items-center gap-1 shrink-0">
+              <Button variant="ghost" size="icon" onClick={refreshHistory} disabled={loading} className="h-8 w-8">
+                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              </Button>
+              <Button onClick={handleExport} size="sm" className="gap-1.5 h-8">
+                <Download className="h-4 w-4" />
+                <span className="hidden sm:inline text-xs">Exportar</span>
+              </Button>
+            </div>
           </div>
         </div>
       </header>
@@ -131,12 +153,7 @@ export default function HistoryPage() {
       <main className="container mx-auto px-4 py-6">
         <Card className="glass-card">
           <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-lg">Lista de Envios</CardTitle>
-              <Button variant="ghost" size="sm" onClick={refreshHistory} disabled={loading}>
-                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-              </Button>
-            </div>
+            <CardTitle className="text-lg">Lista de Envios</CardTitle>
             <CardDescription>
               Visualize todos os disparos realizados
             </CardDescription>
