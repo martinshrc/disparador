@@ -736,33 +736,37 @@ app.post('/api/leads/fetch', async (req, res) => {
       'mainActivity.id.in': [parseInt(String(cnae))],
     })) {
       for (const office of page) {
-        // Para quando salvou o suficiente OU quando já processou lim resultados
-        // (evita continuar paginando em duplicatas e consumir créditos à toa)
-        if (saved >= lim || saved + skipped >= lim) { done = true; break; }
+        if (saved >= lim) { done = true; break; } // salvou o suficiente
         try {
           const ok = await saveOffice(office);
           if (ok) {
             saved++;
             send({ type: 'progress', saved, total: lim, nome: office.company?.name ?? '' });
           } else {
-            skipped++;
+            skipped++; // duplicata — continua procurando novas
           }
         } catch (e) {
           const msg = (e?.message ?? '').toLowerCase();
-          if (msg.includes('credit') || msg.includes('rate limit') || e?.status === 429) {
-            send({ type: 'key_exhausted', message: `Chave ${keyInfo.index} esgotou os créditos / rate limit.` });
+          if (msg.includes('credit') || e?.status === 402) {
+            send({ type: 'key_exhausted', message: `Chave ${keyInfo.index} esgotou os créditos.` });
             done = true;
             break;
           }
-          skipped++;
+          if (msg.includes('rate limit') || e?.status === 429) {
+            // Aguarda 10s e tenta continuar em vez de abortar
+            send({ type: 'progress', saved, total: lim, nome: '⏳ Rate limit — aguardando 10s...' });
+            await sleep(10000);
+          } else {
+            skipped++;
+          }
         }
       }
-      if (done || saved >= lim || saved + skipped >= lim) break;
+      if (done || saved >= lim) break;
     }
   } catch (e) {
     const msg = (e?.message ?? '').toLowerCase();
     if (msg.includes('rate limit') || e?.status === 429) {
-      send({ type: 'key_exhausted', message: `Rate limit atingido na Chave ${keyInfo.index}.` });
+      send({ type: 'error', message: `Rate limit atingido. Tente novamente em alguns segundos.` });
     } else {
       send({ type: 'error', message: e.message });
     }

@@ -64,7 +64,7 @@ Mantenha a intenção original, mas use uma abordagem e estrutura COMPLETAMENTE 
 
 Regras obrigatórias:
 - Varie o gancho inicial: não comece sempre com "Boa noite! Está tudo bem?" — explore outros ângulos (curiosidade, dado, pergunta direta, elogio, contexto de mercado, etc.)
-- Máximo 2-3 frases curtas, tom informal e direto (estilo WhatsApp)
+- Máximo 1-2 frases CURTAS, tom informal e direto (estilo WhatsApp) — nada longo
 - NÃO mencione o nome da empresa no texto
 - Retorne APENAS o texto da mensagem, sem explicações nem aspas
 
