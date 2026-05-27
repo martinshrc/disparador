@@ -101,28 +101,28 @@ export default function HistoryPage() {
     <div className="min-h-screen bg-background">
       <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <Button variant="ghost" size="icon" asChild>
+          <div className="flex items-center justify-between gap-3 min-w-0">
+            <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+              <Button variant="ghost" size="icon" asChild className="shrink-0">
                 <Link to="/">
                   <ArrowLeft className="h-5 w-5" />
                 </Link>
               </Button>
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
+              <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-primary flex items-center justify-center shrink-0">
                   <History className="h-5 w-5 text-primary-foreground" />
                 </div>
-                <div>
-                  <h1 className="text-xl font-bold text-foreground">Histórico de Envios</h1>
-                  <p className="text-sm text-muted-foreground">
+                <div className="min-w-0">
+                  <h1 className="text-base sm:text-xl font-bold text-foreground leading-tight">Histórico de Envios</h1>
+                  <p className="text-xs sm:text-sm text-muted-foreground truncate">
                     {history.length} registros • {successCount} sucesso • {errorCount} erro{cancelledCount > 0 ? ` • ${cancelledCount} cancelado` : ''}
                   </p>
                 </div>
               </div>
             </div>
-            <Button onClick={handleExport} className="gap-2">
+            <Button onClick={handleExport} className="gap-2 shrink-0">
               <Download className="h-4 w-4" />
-              Exportar
+              <span className="hidden sm:inline">Exportar</span>
             </Button>
           </div>
         </div>

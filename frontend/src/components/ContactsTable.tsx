@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react';
-import { RefreshCw, ArrowUpDown, ChevronLeft, ChevronRight, RotateCcw, Trash2, Search, Layers, Flame, CheckCircle, XCircle as XCircleIcon, Snowflake, MessageCircle } from 'lucide-react';
+import { useState, useMemo, useEffect } from 'react';
+import { RefreshCw, ArrowUpDown, ChevronLeft, ChevronRight, RotateCcw, Trash2, Search, Layers, Flame, CheckCircle, XCircle as XCircleIcon, Snowflake, MessageCircle, SlidersHorizontal, ChevronDown } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -93,6 +93,13 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemov
   const [sortByStatus, setSortByStatus] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [draftFilter, setDraftFilter] = useState<FilterType>(filter);
+  const [draftSegmento, setDraftSegmento] = useState(segmentoFilter);
+
+  // Sync draft when parent resets filters externally
+  useEffect(() => { setDraftFilter(filter); }, [filter]);
+  useEffect(() => { setDraftSegmento(segmentoFilter); }, [segmentoFilter]);
 
   /** Lista de segmentos únicos presentes na lista (exclui vazios) */
   const segmentos = useMemo(() => {
@@ -144,15 +151,29 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemov
   };
 
   const handleFilterChange = (f: FilterType) => {
-    onFilterChange(f);
-    setCurrentPage(1);
-    setSelectedIds(new Set());
+    setDraftFilter(f);
   };
 
   const handleSegmentoChange = (seg: string) => {
-    onSegmentoFilterChange(seg);
+    setDraftSegmento(seg);
+  };
+
+  const handleApplyFilter = () => {
+    onFilterChange(draftFilter);
+    onSegmentoFilterChange(draftSegmento);
     setCurrentPage(1);
     setSelectedIds(new Set());
+    setFiltersOpen(false);
+  };
+
+  const handleClearFilter = () => {
+    setDraftFilter('todos');
+    setDraftSegmento('_todos');
+    onFilterChange('todos');
+    onSegmentoFilterChange('_todos');
+    setCurrentPage(1);
+    setSelectedIds(new Set());
+    setFiltersOpen(false);
   };
 
   /** Seleciona todos os contatos visíveis (filtrados + paginados) */
@@ -211,6 +232,13 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemov
   /** Verdadeiro quando pelo menos um contato tem dados do funil */
   const hasFunilData        = contacts.some(c => c.statusFunil != null);
 
+  const hasActiveFilter = filter !== 'todos' || segmentoFilter !== '_todos';
+  const activeFilterLabel = filter !== 'todos'
+    ? `${FILTER_LABELS[filter]}${segmentoFilter !== '_todos' ? ` · ${segmentoFilter}` : ''}`
+    : segmentoFilter !== '_todos'
+      ? segmentoFilter
+      : null;
+
   if (contacts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -226,12 +254,12 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemov
   }
 
   return (
-    <div className="space-y-4">
-      {/* Header — filtros + busca */}
+    <div className="space-y-4 min-w-0">
+      {/* Header — busca + toggle de filtros + ações */}
       <div className="space-y-2">
-        {/* Linha 1: busca + filtros de contato + segmento + botão */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
+            {/* Busca — sempre visível */}
             <div className="relative">
               <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
@@ -241,34 +269,21 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemov
                 onChange={e => { setSearch(e.target.value); setCurrentPage(1); }}
               />
             </div>
-            <div className="flex items-center gap-1">
-              <Button variant={filter === 'todos' ? 'default' : 'outline'} size="sm" className="h-7 text-xs" onClick={() => handleFilterChange('todos')}>
-                Todos
-                <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{contacts.length}</Badge>
+            {/* Toggle de filtros */}
+            <Button
+              variant="outline"
+              size="sm"
+              className={cn('h-7 text-xs gap-1.5', hasActiveFilter && 'border-primary text-primary bg-primary/5')}
+              onClick={() => setFiltersOpen(v => !v)}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              {activeFilterLabel ? `Filtro: ${activeFilterLabel}` : 'Filtros'}
+              <ChevronDown className={cn('h-3.5 w-3.5 transition-transform duration-150', filtersOpen && 'rotate-180')} />
+            </Button>
+            {hasActiveFilter && (
+              <Button variant="ghost" size="sm" className="h-7 text-xs px-2 text-muted-foreground" onClick={handleClearFilter}>
+                Limpar
               </Button>
-              <Button variant={filter === 'primeiro' ? 'default' : 'outline'} size="sm" className="h-7 text-xs" onClick={() => handleFilterChange('primeiro')}>
-                Primeiro contato
-                <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{countPrimeiro}</Badge>
-              </Button>
-              <Button variant={filter === 'ja-enviou' ? 'default' : 'outline'} size="sm" className="h-7 text-xs" onClick={() => handleFilterChange('ja-enviou')}>
-                Já enviou
-                <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-xs">{countJaEnviou}</Badge>
-              </Button>
-            </div>
-            {/* Filtro por segmento */}
-            {segmentos.length > 0 && (
-              <Select value={segmentoFilter} onValueChange={handleSegmentoChange}>
-                <SelectTrigger className="h-7 text-xs w-44 gap-1">
-                  <Layers className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  <SelectValue placeholder="Segmento..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="_todos">Todos segmentos</SelectItem>
-                  {segmentos.map(s => (
-                    <SelectItem key={s} value={s}>{s}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             )}
           </div>
 
@@ -299,90 +314,103 @@ export function ContactsTable({ contacts, onRetry, onRetryAll, onRemove, onRemov
           </div>
         </div>
 
-        {/* Linha 2: filtros de funil + etapa — aparece só quando há dados de prospecção */}
-        {hasFunilData && (
-          <div className="flex flex-wrap items-center gap-2 pt-0.5">
-            <span className="text-xs text-muted-foreground font-medium">Funil:</span>
-            <Button
-              variant={filter === 'funil-ativo' ? 'default' : 'outline'}
-              size="sm"
-              className="h-7 text-xs gap-1"
-              onClick={() => handleFilterChange('funil-ativo')}
-            >
-              <MessageCircle className="h-3 w-3" />
-              Ativo
-              <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">{countFunilAtivo}</Badge>
-            </Button>
-            <Button
-              variant={filter === 'funil-frio' ? 'default' : 'outline'}
-              size="sm"
-              className="h-7 text-xs gap-1"
-              onClick={() => handleFilterChange('funil-frio')}
-            >
-              <Snowflake className="h-3 w-3" />
-              Frio
-              <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">{countFunilFrio}</Badge>
-            </Button>
-            <Button
-              variant={filter === 'funil-qualificado' ? 'default' : 'outline'}
-              size="sm"
-              className="h-7 text-xs gap-1"
-              onClick={() => handleFilterChange('funil-qualificado')}
-            >
-              <CheckCircle className="h-3 w-3" />
-              Qualificado
-              <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">{countFunilQualif}</Badge>
-            </Button>
-            {countFunilOptOut > 0 && (
-              <Button
-                variant={filter === 'funil-opt_out' ? 'default' : 'outline'}
-                size="sm"
-                className="h-7 text-xs gap-1"
-                onClick={() => handleFilterChange('funil-opt_out')}
-              >
-                <XCircleIcon className="h-3 w-3" />
-                Opt-out
-                <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">{countFunilOptOut}</Badge>
+        {/* Painel de filtros — recolhível */}
+        {filtersOpen && (
+          <div className="rounded-md border bg-muted/20 p-3 space-y-3 w-56">
+            {/* Categoria: Contato */}
+            <div className="space-y-0.5">
+              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 pb-0.5">Contato</p>
+              <Button variant={draftFilter === 'todos' ? 'secondary' : 'ghost'} size="sm" className="w-full h-8 text-xs justify-between px-2" onClick={() => handleFilterChange('todos')}>
+                <span>Todos</span>
+                <Badge variant="outline" className="h-4 px-1 text-[10px]">{contacts.length}</Badge>
               </Button>
+              <Button variant={draftFilter === 'primeiro' ? 'secondary' : 'ghost'} size="sm" className="w-full h-8 text-xs justify-between px-2" onClick={() => handleFilterChange('primeiro')}>
+                <span>Primeiro contato</span>
+                <Badge variant="outline" className="h-4 px-1 text-[10px]">{countPrimeiro}</Badge>
+              </Button>
+              <Button variant={draftFilter === 'ja-enviou' ? 'secondary' : 'ghost'} size="sm" className="w-full h-8 text-xs justify-between px-2" onClick={() => handleFilterChange('ja-enviou')}>
+                <span>Já enviou</span>
+                <Badge variant="outline" className="h-4 px-1 text-[10px]">{countJaEnviou}</Badge>
+              </Button>
+            </div>
+
+            {/* Categoria: Segmento */}
+            {segmentos.length > 0 && (
+              <div className="space-y-0.5">
+                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 pb-0.5">Segmento</p>
+                <Select value={draftSegmento} onValueChange={handleSegmentoChange}>
+                  <SelectTrigger className="h-8 text-xs gap-1 w-full">
+                    <Layers className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <SelectValue placeholder="Todos os segmentos" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="_todos">Todos os segmentos</SelectItem>
+                    {segmentos.map(s => (
+                      <SelectItem key={s} value={s}>{s}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             )}
 
-            <span className="text-xs text-muted-foreground font-medium ml-2">Etapa:</span>
-            {countEtapa1 > 0 && (
-              <Button
-                variant={filter === 'etapa-1' ? 'default' : 'outline'}
-                size="sm"
-                className="h-7 text-xs gap-1"
-                onClick={() => handleFilterChange('etapa-1')}
-              >
-                <Flame className="h-3 w-3" />
-                E1
-                <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">{countEtapa1}</Badge>
-              </Button>
+            {/* Categoria: Funil — só quando há dados de prospecção */}
+            {hasFunilData && (
+              <>
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 pb-0.5">Funil</p>
+                  <Button variant={draftFilter === 'funil-ativo' ? 'secondary' : 'ghost'} size="sm" className="w-full h-8 text-xs justify-between px-2" onClick={() => handleFilterChange('funil-ativo')}>
+                    <span className="flex items-center gap-1.5"><MessageCircle className="h-3 w-3" />Ativo</span>
+                    <Badge variant="outline" className="h-4 px-1 text-[10px]">{countFunilAtivo}</Badge>
+                  </Button>
+                  <Button variant={draftFilter === 'funil-frio' ? 'secondary' : 'ghost'} size="sm" className="w-full h-8 text-xs justify-between px-2" onClick={() => handleFilterChange('funil-frio')}>
+                    <span className="flex items-center gap-1.5"><Snowflake className="h-3 w-3" />Frio</span>
+                    <Badge variant="outline" className="h-4 px-1 text-[10px]">{countFunilFrio}</Badge>
+                  </Button>
+                  <Button variant={draftFilter === 'funil-qualificado' ? 'secondary' : 'ghost'} size="sm" className="w-full h-8 text-xs justify-between px-2" onClick={() => handleFilterChange('funil-qualificado')}>
+                    <span className="flex items-center gap-1.5"><CheckCircle className="h-3 w-3" />Qualificado</span>
+                    <Badge variant="outline" className="h-4 px-1 text-[10px]">{countFunilQualif}</Badge>
+                  </Button>
+                  {countFunilOptOut > 0 && (
+                    <Button variant={draftFilter === 'funil-opt_out' ? 'secondary' : 'ghost'} size="sm" className="w-full h-8 text-xs justify-between px-2" onClick={() => handleFilterChange('funil-opt_out')}>
+                      <span className="flex items-center gap-1.5"><XCircleIcon className="h-3 w-3" />Opt-out</span>
+                      <Badge variant="outline" className="h-4 px-1 text-[10px]">{countFunilOptOut}</Badge>
+                    </Button>
+                  )}
+                </div>
+
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 pb-0.5">Etapa</p>
+                  {countEtapa1 > 0 && (
+                    <Button variant={draftFilter === 'etapa-1' ? 'secondary' : 'ghost'} size="sm" className="w-full h-8 text-xs justify-between px-2" onClick={() => handleFilterChange('etapa-1')}>
+                      <span className="flex items-center gap-1.5"><Flame className="h-3 w-3" />Etapa 1</span>
+                      <Badge variant="outline" className="h-4 px-1 text-[10px]">{countEtapa1}</Badge>
+                    </Button>
+                  )}
+                  {countEtapa2 > 0 && (
+                    <Button variant={draftFilter === 'etapa-2' ? 'secondary' : 'ghost'} size="sm" className="w-full h-8 text-xs justify-between px-2" onClick={() => handleFilterChange('etapa-2')}>
+                      <span className="flex items-center gap-1.5"><Flame className="h-3 w-3" />Etapa 2</span>
+                      <Badge variant="outline" className="h-4 px-1 text-[10px]">{countEtapa2}</Badge>
+                    </Button>
+                  )}
+                  {countEtapa3 > 0 && (
+                    <Button variant={draftFilter === 'etapa-3' ? 'secondary' : 'ghost'} size="sm" className="w-full h-8 text-xs justify-between px-2" onClick={() => handleFilterChange('etapa-3')}>
+                      <span className="flex items-center gap-1.5"><Flame className="h-3 w-3" />Etapa 3</span>
+                      <Badge variant="outline" className="h-4 px-1 text-[10px]">{countEtapa3}</Badge>
+                    </Button>
+                  )}
+                </div>
+              </>
             )}
-            {countEtapa2 > 0 && (
-              <Button
-                variant={filter === 'etapa-2' ? 'default' : 'outline'}
-                size="sm"
-                className="h-7 text-xs gap-1"
-                onClick={() => handleFilterChange('etapa-2')}
-              >
-                <Flame className="h-3 w-3" />
-                E2
-                <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">{countEtapa2}</Badge>
+
+            {/* Ações do painel */}
+            <div className="flex items-center gap-2 pt-1 border-t border-border/50">
+              <Button size="sm" className="h-7 text-xs flex-1" onClick={handleApplyFilter}>
+                Aplicar filtro
               </Button>
-            )}
-            {countEtapa3 > 0 && (
-              <Button
-                variant={filter === 'etapa-3' ? 'default' : 'outline'}
-                size="sm"
-                className="h-7 text-xs gap-1"
-                onClick={() => handleFilterChange('etapa-3')}
-              >
-                <Flame className="h-3 w-3" />
-                E3
-                <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">{countEtapa3}</Badge>
+              <Button variant="ghost" size="sm" className="h-7 text-xs px-2" onClick={() => setFiltersOpen(false)}>
+                Cancelar
               </Button>
-            )}
+            </div>
           </div>
         )}
       </div>

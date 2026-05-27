@@ -485,27 +485,27 @@ export function Dashboard() {
   return <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <img src="/blitzar-logo.png" alt="Blitzar Labs" className="h-10 object-contain" />
-              <div>
-                <h1 className="text-xl font-bold text-foreground">Blitzar Labs - Disparador</h1>
-                <p className="text-sm text-muted-foreground">Disparos B2B com IA Anti-Bloqueio</p>
+        <div className="container mx-auto px-4 py-3">
+          <div className="flex items-center justify-between gap-2 min-w-0">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0 shrink-0">
+              <img src="/blitzar-logo.png" alt="Blitzar Labs" className="h-8 sm:h-10 object-contain shrink-0" />
+              <div className="min-w-0">
+                <h1 className="text-base sm:text-xl font-bold text-foreground leading-tight">Blitzar Labs</h1>
+                <p className="text-xs sm:text-sm text-muted-foreground hidden sm:block">Disparos B2B com IA Anti-Bloqueio</p>
               </div>
             </div>
 
-            <div className="flex items-center gap-6">
-              <div className="flex items-center gap-4 text-sm">
-              <div
-                className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"
-                onClick={() => navigate('/contacts')}
-                title="X na lista de disparo (clique para ver Contatos salvos)"
-              >
-                <Users className="h-4 w-4 text-muted-foreground" />
-                <span className="font-medium">{contacts.length}</span>
-                <span className="text-muted-foreground">na lista</span>
-              </div>
+            <div className="flex items-center gap-2 sm:gap-6 shrink-0">
+              <div className="hidden md:flex items-center gap-4 text-sm">
+                <div
+                  className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"
+                  onClick={() => navigate('/contacts')}
+                  title="X na lista de disparo (clique para ver Contatos salvos)"
+                >
+                  <Users className="h-4 w-4 text-muted-foreground" />
+                  <span className="font-medium">{contacts.length}</span>
+                  <span className="text-muted-foreground">na lista</span>
+                </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-success" />
                   <span className="font-medium text-success">{totalEnviados}</span>
@@ -516,7 +516,7 @@ export function Dashboard() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 border-l pl-4">
+              <div className="flex items-center gap-2 sm:gap-3 sm:border-l sm:pl-4">
                 <Button
                   variant="outline"
                   size="sm"
@@ -526,14 +526,14 @@ export function Dashboard() {
                   title="Configurações de IA"
                 >
                   <KeyRound className="h-4 w-4" />
-                  IA
+                  <span className="hidden sm:inline">IA</span>
                 </Button>
-                <span className="text-sm text-muted-foreground truncate max-w-[150px]">
+                <span className="text-sm text-muted-foreground truncate max-w-[120px] hidden sm:inline">
                   {user?.email}
                 </span>
                 <Button variant="ghost" size="sm" onClick={handleSignOut} disabled={isRunning} className="gap-2">
                   <LogOut className="h-4 w-4" />
-                  Sair
+                  <span className="hidden sm:inline">Sair</span>
                 </Button>
               </div>
             </div>
@@ -672,10 +672,10 @@ export function Dashboard() {
             <div className="min-w-0">
             <Card className="glass-card">
               <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <div>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
                     <CardTitle className="text-lg">Painel de Controle</CardTitle>
-                    <CardDescription>
+                    <CardDescription className="break-words">
                       {!dispatchInstanceName
                         ? 'Conecte um WhatsApp no card "Conector WhatsApp" na configuração acima.'
                         : !mensagemBase.trim()

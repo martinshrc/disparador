@@ -466,6 +466,23 @@ async function processDisparoSession(sessionId, instanceName) {
              VALUES ($1, $2, $3, $4, $5, $6, 'error', $7)`,
             [sessionUserId, item.empresa, item.telefone, sessionMsgBase, item.mensagem, instanceName, errMsg]
           ).catch(() => {});
+
+          // Upsert em blitzar_leads: cria a linha se não existir e marca como 'erro'
+          // Isso remove o lead da tela de Coletar Leads para esse usuário
+          const telNormErr = String(item.telefone).replace(/\D/g, '');
+          db.query(
+            `INSERT INTO blitzar_leads (user_id, pool_lead_id, status_lead, notas, updated_at)
+             SELECT $1, bp.id, 'erro', $3, NOW()
+             FROM blitzar_leads_pool bp
+             WHERE regexp_replace(COALESCE(bp.telefone,           ''), '\\D','','g') = $2
+                OR regexp_replace(COALESCE(bp.telefone_secundario,''), '\\D','','g') = $2
+             LIMIT 1
+             ON CONFLICT (user_id, pool_lead_id)
+             DO UPDATE SET status_lead = 'erro',
+                           notas       = EXCLUDED.notas,
+                           updated_at  = NOW()`,
+            [sessionUserId, telNormErr, `Erro no disparo: ${errMsg}`]
+          ).catch(() => {});
         }
       }
 
@@ -567,38 +584,103 @@ app.get('/api/leads/stats', async (_req, res) => {
   res.json(s);
 });
 
-// ─── GET /api/leads/pool ──────────────────────────────────────────────────────
-app.get('/api/leads/pool', async (req, res) => {
-  const { estado, cnae, cidade, search, limit = 50, offset = 0 } = req.query;
+// ─── GET /api/leads/pool/select ──────────────────────────────────────────────
+// Retorna {id, empresa, telefone} de até `limit` leads com os filtros ativos.
+// Usado pelo botão "Selecionar 50/100/200/Todos" do frontend.
+// Query params: estado, cnae, search, user_id, limit (máx 500)
+app.get('/api/leads/pool/select', async (req, res) => {
+  const { estado, cnae, search, user_id, limit = 50 } = req.query;
+  const cap = Math.min(parseInt(String(limit)) || 50, 500);
 
   const conditions = [];
   const params = [];
 
-  if (estado) { params.push(estado);           conditions.push(`estado = $${params.length}`); }
-  if (cnae)   { params.push(parseInt(String(cnae)));   conditions.push(`cnae_principal_codigo = $${params.length}`); }
-  if (cidade) { params.push(`%${cidade}%`);    conditions.push(`cidade ILIKE $${params.length}`); }
+  if (estado) { params.push(estado);                 conditions.push(`blp.estado = $${params.length}`); }
+  if (cnae)   { params.push(parseInt(String(cnae))); conditions.push(`blp.cnae_principal_codigo = $${params.length}`); }
   if (search) {
     params.push(`%${search}%`);
     const n = params.length;
-    conditions.push(`(razao_social ILIKE $${n} OR nome_fantasia ILIKE $${n} OR cnpj ILIKE $${n})`);
+    conditions.push(`(blp.razao_social ILIKE $${n} OR blp.nome_fantasia ILIKE $${n} OR blp.cnpj ILIKE $${n})`);
+  }
+
+  let joinClause = '';
+  if (user_id) {
+    params.push(user_id);
+    joinClause = `LEFT JOIN blitzar_leads bl ON bl.pool_lead_id = blp.id AND bl.user_id = $${params.length}`;
+    conditions.push(`(bl.status_lead IS NULL OR bl.status_lead != 'erro')`);
+  }
+
+  // Só retorna leads que têm telefone (necessário para disparar)
+  conditions.push(`blp.telefone IS NOT NULL`);
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  params.push(cap);
+
+  const { rows } = await db.query(
+    `SELECT blp.id,
+            COALESCE(blp.nome_fantasia, blp.razao_social) AS empresa,
+            blp.telefone
+     FROM blitzar_leads_pool blp
+     ${joinClause}
+     ${where}
+     ORDER BY blp.created_at DESC
+     LIMIT $${params.length}`,
+    params
+  );
+
+  res.json({ leads: rows, total: rows.length });
+});
+
+// ─── GET /api/leads/pool ──────────────────────────────────────────────────────
+// Query params: estado, cnae, cidade, search, limit, offset, user_id
+// Quando user_id fornecido: exclui leads com status_lead='erro' para aquele usuário
+//                           e retorna status_lead de cada lead.
+app.get('/api/leads/pool', async (req, res) => {
+  const { estado, cnae, cidade, search, limit = 50, offset = 0, user_id } = req.query;
+
+  const conditions = [];
+  const params = [];
+
+  if (estado) { params.push(estado);                    conditions.push(`blp.estado = $${params.length}`); }
+  if (cnae)   { params.push(parseInt(String(cnae)));    conditions.push(`blp.cnae_principal_codigo = $${params.length}`); }
+  if (cidade) { params.push(`%${cidade}%`);             conditions.push(`blp.cidade ILIKE $${params.length}`); }
+  if (search) {
+    params.push(`%${search}%`);
+    const n = params.length;
+    conditions.push(`(blp.razao_social ILIKE $${n} OR blp.nome_fantasia ILIKE $${n} OR blp.cnpj ILIKE $${n})`);
+  }
+
+  // Quando user_id fornecido, exclui leads com erro para esse usuário
+  let joinClause = '';
+  if (user_id) {
+    params.push(user_id);
+    joinClause = `LEFT JOIN blitzar_leads bl ON bl.pool_lead_id = blp.id AND bl.user_id = $${params.length}`;
+    conditions.push(`(bl.status_lead IS NULL OR bl.status_lead != 'erro')`);
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const dataParams = [...params, parseInt(String(limit)), parseInt(String(offset))];
+  const statusSelect = user_id ? ', bl.status_lead' : ', NULL::varchar AS status_lead';
   const { rows } = await db.query(
-    `SELECT id, cnpj, razao_social, nome_fantasia, data_abertura, porte,
-            cnae_principal_codigo, cnae_principal_texto, segmento,
-            telefone, telefone_secundario, email,
-            cidade, estado, cep, simples_nacional, mei, created_at
-     FROM blitzar_leads_pool ${where}
-     ORDER BY created_at DESC
+    `SELECT blp.id, blp.cnpj, blp.razao_social, blp.nome_fantasia, blp.data_abertura, blp.porte,
+            blp.cnae_principal_codigo, blp.cnae_principal_texto, blp.segmento,
+            blp.telefone, blp.telefone_secundario, blp.email,
+            blp.cidade, blp.estado, blp.cep, blp.simples_nacional, blp.mei, blp.created_at
+            ${statusSelect}
+     FROM blitzar_leads_pool blp
+     ${joinClause}
+     ${where}
+     ORDER BY blp.created_at DESC
      LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`,
     dataParams
   );
 
   const { rows: [{ total }] } = await db.query(
-    `SELECT COUNT(*) AS total FROM blitzar_leads_pool ${where}`,
+    `SELECT COUNT(*) AS total
+     FROM blitzar_leads_pool blp
+     ${joinClause}
+     ${where}`,
     params
   );
 

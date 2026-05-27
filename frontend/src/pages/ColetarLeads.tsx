@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   ArrowLeft, Search, RefreshCw, Building2,
   Phone, Mail, MapPin, Zap, Database, ChevronLeft, ChevronRight,
-  SendHorizontal, ChevronsUpDown, Check,
+  SendHorizontal, ChevronsUpDown, Check, ListChecks,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,6 +20,10 @@ import {
 import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from '@/components/ui/command';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
+  DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { CNAES, CNAE_CATEGORIES, ESTADOS } from '@/data/cnaes';
@@ -45,6 +49,14 @@ interface Lead {
   simples_nacional: boolean;
   mei: boolean;
   created_at: string;
+  status_lead: string | null;
+}
+
+// Lead simplificado retornado pelo endpoint de seleção em lote
+interface SelectLead {
+  id: string;
+  empresa: string;
+  telefone: string;
 }
 
 interface CreditInfo {
@@ -93,8 +105,12 @@ export default function ColetarLeads() {
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 20;
 
-  // Selection for dispatch
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  /**
+   * Seleção multi-página: Map<id, {empresa, telefone}>
+   * Guarda os dados de cada lead selecionado mesmo quando muda de página.
+   */
+  const [selectedMap, setSelectedMap] = useState<Map<string, { empresa: string; telefone: string }>>(new Map());
+  const [bulkLoading, setBulkLoading] = useState(false);
   const [addingToDispatch, setAddingToDispatch] = useState(false);
 
   // Credits
@@ -120,7 +136,7 @@ export default function ColetarLeads() {
 
   useEffect(() => {
     loadLeads();
-  }, [page, selectedCnae, selectedEstado, searchText]);
+  }, [page, selectedCnae, selectedEstado, searchText, user?.id]);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -154,6 +170,8 @@ export default function ColetarLeads() {
       if (selectedCnae) params.set('cnae', selectedCnae);
       if (selectedEstado) params.set('estado', selectedEstado);
       if (searchText.trim()) params.set('search', searchText.trim());
+      // user_id para filtrar leads com erro no backend
+      if (user?.id) params.set('user_id', user.id);
 
       const r = await apiClient.get(`/api/leads/pool?${params}`);
       const data = await r.json();
@@ -167,33 +185,99 @@ export default function ColetarLeads() {
   }
 
   // ─── Selection helpers ──────────────────────────────────────────────────
-  function toggleSelect(id: string) {
-    setSelected(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+
+  function toggleSelect(lead: Lead) {
+    if (!lead.telefone) return;
+    setSelectedMap(prev => {
+      const next = new Map(prev);
+      if (next.has(lead.id)) {
+        next.delete(lead.id);
+      } else {
+        next.set(lead.id, {
+          empresa: lead.nome_fantasia || lead.razao_social,
+          telefone: lead.telefone!.replace(/\D/g, ''),
+        });
+      }
       return next;
     });
   }
 
-  function toggleSelectAll() {
-    if (selected.size === leads.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(leads.map(l => l.id)));
+  function toggleSelectPage() {
+    const pageLeadsWithPhone = leads.filter(l => l.telefone);
+    const allPageSelected = pageLeadsWithPhone.every(l => selectedMap.has(l.id));
+
+    setSelectedMap(prev => {
+      const next = new Map(prev);
+      if (allPageSelected) {
+        pageLeadsWithPhone.forEach(l => next.delete(l.id));
+      } else {
+        pageLeadsWithPhone.forEach(l => next.set(l.id, {
+          empresa: l.nome_fantasia || l.razao_social,
+          telefone: l.telefone!.replace(/\D/g, ''),
+        }));
+      }
+      return next;
+    });
+  }
+
+  /**
+   * Busca N leads do backend (com filtros ativos) e adiciona à seleção.
+   * Usado pelos botões "Selecionar 50 / 100 / 200 / Todos".
+   */
+  async function handleBulkSelect(n: number) {
+    setBulkLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: String(n) });
+      if (selectedCnae) params.set('cnae', selectedCnae);
+      if (selectedEstado) params.set('estado', selectedEstado);
+      if (searchText.trim()) params.set('search', searchText.trim());
+      if (user?.id) params.set('user_id', user.id);
+
+      const r = await apiClient.get(`/api/leads/pool/select?${params}`);
+      const data = await r.json();
+      const fetched: SelectLead[] = data.leads ?? [];
+
+      if (fetched.length === 0) {
+        toast({ title: 'Nenhum lead disponível com os filtros atuais', variant: 'destructive' });
+        return;
+      }
+
+      setSelectedMap(prev => {
+        const next = new Map(prev);
+        fetched.forEach(l => next.set(l.id, {
+          empresa: l.empresa,
+          telefone: l.telefone.replace(/\D/g, ''),
+        }));
+        return next;
+      });
+
+      toast({ title: `${fetched.length} lead${fetched.length !== 1 ? 's' : ''} adicionado${fetched.length !== 1 ? 's' : ''} à seleção` });
+    } catch {
+      toast({ title: 'Erro ao buscar leads para seleção', variant: 'destructive' });
+    } finally {
+      setBulkLoading(false);
     }
+  }
+
+  function clearSelection() {
+    setSelectedMap(new Map());
   }
 
   // ─── Adicionar leads ao disparo (Supabase contacts) ─────────────────────
   async function handleAddToDispatch() {
-    if (selected.size === 0) return;
+    if (selectedMap.size === 0) return;
     setAddingToDispatch(true);
     try {
-      const toAdd = leads
-        .filter(l => selected.has(l.id) && l.telefone)
-        .map(l => ({
-          empresa: l.nome_fantasia || l.razao_social,
-          telefone: l.telefone!.replace(/\D/g, ''),
-        }));
+      // Deduplica por telefone antes de salvar
+      const seen = new Set<string>();
+      const toAdd: { empresa: string; telefone: string }[] = [];
+      selectedMap.forEach(({ empresa, telefone }) => {
+        const tel = telefone.replace(/\D/g, '');
+        if (tel && !seen.has(tel)) {
+          seen.add(tel);
+          toAdd.push({ empresa, telefone: tel });
+        }
+      });
 
       if (toAdd.length === 0) {
         toast({ title: 'Nenhum lead selecionado possui telefone', variant: 'destructive' });
@@ -201,8 +285,8 @@ export default function ColetarLeads() {
       }
 
       await saveContactsFromFile(toAdd);
-      toast({ title: `${toAdd.length} empresa(s) adicionadas ao disparo!` });
-      setSelected(new Set());
+      toast({ title: `${toAdd.length} empresa${toAdd.length !== 1 ? 's' : ''} adicionada${toAdd.length !== 1 ? 's' : ''} ao disparo!` });
+      clearSelection();
     } catch (e: any) {
       toast({ title: 'Erro ao adicionar ao disparo', description: e.message, variant: 'destructive' });
     } finally {
@@ -271,7 +355,9 @@ export default function ColetarLeads() {
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
-  const cnaeInfo = CNAES.find(c => String(c.id) === selectedCnae);
+  const pageLeadsWithPhone = leads.filter(l => l.telefone);
+  const allPageSelected = pageLeadsWithPhone.length > 0 && pageLeadsWithPhone.every(l => selectedMap.has(l.id));
+  const somePageSelected = pageLeadsWithPhone.some(l => selectedMap.has(l.id));
 
   // ─── Render ─────────────────────────────────────────────────────────────
   return (
@@ -448,13 +534,67 @@ export default function ColetarLeads() {
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between flex-wrap gap-3">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <CardTitle className="text-base flex items-center gap-2">
                 <Database className="h-4 w-4" />
                 Pool de leads
                 {total > 0 && <Badge variant="secondary">{total.toLocaleString()} empresas</Badge>}
               </CardTitle>
-              {selected.size > 0 && (
+
+              {/* Botão de seleção em lote */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 h-7"
+                    disabled={bulkLoading || loadingLeads}
+                  >
+                    {bulkLoading
+                      ? <RefreshCw className="h-3 w-3 animate-spin" />
+                      : <ListChecks className="h-3 w-3" />
+                    }
+                    Selecionar
+                    {selectedMap.size > 0 && (
+                      <Badge variant="secondary" className="ml-1 h-4 px-1 text-xs">
+                        {selectedMap.size}
+                      </Badge>
+                    )}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuLabel className="text-xs text-muted-foreground">
+                    Selecionar leads com telefone
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => handleBulkSelect(50)}>
+                    Selecionar 50
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleBulkSelect(100)}>
+                    Selecionar 100
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleBulkSelect(200)}>
+                    Selecionar 200
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleBulkSelect(500)}>
+                    Selecionar todos (até 500)
+                  </DropdownMenuItem>
+                  {selectedMap.size > 0 && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={clearSelection}
+                        className="text-muted-foreground"
+                      >
+                        Limpar seleção ({selectedMap.size})
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              {/* Botão de disparar selecionados */}
+              {selectedMap.size > 0 && (
                 <Button
                   size="sm"
                   onClick={handleAddToDispatch}
@@ -465,7 +605,7 @@ export default function ColetarLeads() {
                     ? <RefreshCw className="h-3 w-3 animate-spin" />
                     : <SendHorizontal className="h-3 w-3" />
                   }
-                  Disparar {selected.size} selecionado{selected.size !== 1 ? 's' : ''}
+                  Disparar {selectedMap.size} selecionado{selectedMap.size !== 1 ? 's' : ''}
                 </Button>
               )}
             </div>
@@ -525,8 +665,8 @@ export default function ColetarLeads() {
                   <tr className="border-b bg-muted/40">
                     <th className="px-4 py-2 w-8">
                       <Checkbox
-                        checked={leads.length > 0 && selected.size === leads.length}
-                        onCheckedChange={toggleSelectAll}
+                        checked={allPageSelected ? true : somePageSelected ? 'indeterminate' : false}
+                        onCheckedChange={toggleSelectPage}
                       />
                     </th>
                     <th className="text-left px-4 py-2 font-medium text-muted-foreground">Empresa</th>
@@ -540,13 +680,14 @@ export default function ColetarLeads() {
                   {leads.map((lead, idx) => (
                     <tr
                       key={lead.id}
-                      className={`border-b hover:bg-muted/20 transition-colors cursor-pointer ${selected.has(lead.id) ? 'bg-primary/5' : idx % 2 === 0 ? '' : 'bg-muted/5'}`}
-                      onClick={() => toggleSelect(lead.id)}
+                      className={`border-b hover:bg-muted/20 transition-colors cursor-pointer ${selectedMap.has(lead.id) ? 'bg-primary/5' : idx % 2 === 0 ? '' : 'bg-muted/5'}`}
+                      onClick={() => toggleSelect(lead)}
                     >
                       <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                         <Checkbox
-                          checked={selected.has(lead.id)}
-                          onCheckedChange={() => toggleSelect(lead.id)}
+                          checked={selectedMap.has(lead.id)}
+                          disabled={!lead.telefone}
+                          onCheckedChange={() => toggleSelect(lead)}
                         />
                       </td>
                       {/* Empresa */}
@@ -582,7 +723,7 @@ export default function ColetarLeads() {
                       <td className="px-4 py-3">
                         {lead.telefone ? (
                           <button
-                            onClick={() => copyPhone(lead.telefone)}
+                            onClick={e => { e.stopPropagation(); copyPhone(lead.telefone); }}
                             className="flex items-center gap-1 text-xs hover:text-primary transition-colors"
                             title="Clique para copiar"
                           >
@@ -619,6 +760,7 @@ export default function ColetarLeads() {
             <div className="flex items-center justify-between px-4 py-3 border-t">
               <p className="text-xs text-muted-foreground">
                 Página {page + 1} de {totalPages} ({total.toLocaleString()} resultados)
+                {selectedMap.size > 0 && ` · ${selectedMap.size} selecionado${selectedMap.size !== 1 ? 's' : ''} no total`}
               </p>
               <div className="flex gap-1">
                 <Button variant="outline" size="sm" onClick={() => setPage(p => p - 1)} disabled={page === 0}>
