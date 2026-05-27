@@ -57,9 +57,19 @@ export async function generateAIMessage(
     };
   }
 
-  const prompt = `Modifique o texto abaixo, sem alterar a intenção ou significado da mensagem. Apenas faça pequenas variações nas palavras para evitar detecção de spam. Retorne APENAS o texto modificado, sem explicações.
+  const prompt = `Você é especialista em prospecção B2B via WhatsApp.
 
-Texto Original: ${mensagemBase}`;
+Reescreva a mensagem abaixo para ser enviada à empresa "${empresa}".
+Mantenha a intenção original, mas use uma abordagem e estrutura COMPLETAMENTE DIFERENTE a cada geração.
+
+Regras obrigatórias:
+- Varie o gancho inicial: não comece sempre com "Boa noite! Está tudo bem?" — explore outros ângulos (curiosidade, dado, pergunta direta, elogio, contexto de mercado, etc.)
+- Máximo 2-3 frases curtas, tom informal e direto (estilo WhatsApp)
+- NÃO mencione o nome da empresa no texto
+- Retorne APENAS o texto da mensagem, sem explicações nem aspas
+
+Mensagem base (intenção a preservar):
+${mensagemBase}`;
 
   const retryResult = await withRetry(
     async () => {
@@ -68,6 +78,7 @@ Texto Original: ${mensagemBase}`;
         const response = await ai.models.generateContent({
           model: effective.model,
           contents: prompt,
+          config: { temperature: 1.4 },
         });
         const generatedText = response.text;
         if (!generatedText || generatedText.trim().length === 0) {
@@ -80,6 +91,7 @@ Texto Original: ${mensagemBase}`;
       const completion = await openai.chat.completions.create({
         model: effective.model,
         messages: [{ role: 'user', content: prompt }],
+        temperature: 1.2,
       });
       const text = completion.choices[0]?.message?.content?.trim();
       if (!text) {
