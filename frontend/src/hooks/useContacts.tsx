@@ -142,6 +142,12 @@ export function useContacts() {
     return await r.json();
   };
 
+  // ─── desativarContacts — marca contatos como desativados no VPS (cross-device) ─
+  const desativarContacts = async (ids: string[]): Promise<void> => {
+    if (!user || ids.length === 0) return;
+    await apiClient.patch('/api/contacts/desativar', { user_id: user.id, ids }).catch(() => {});
+  };
+
   // ─── deleteContact ──────────────────────────────────────────────────────────
   const deleteContact = async (id: string): Promise<boolean> => {
     if (!user) return false;
@@ -184,6 +190,7 @@ export function useContacts() {
     saveContact,
     updateContactMessage,
     saveContactsFromFile,
+    desativarContacts,
     deleteContact,
     updateContact,
     refreshContacts: fetchContacts,

@@ -70,34 +70,7 @@ export function Dashboard() {
   const { toast }    = useToast();
   const { user, signOut } = useAuth();
 
-  /**
-   * IDs de contatos excluídos da lista de disparo (persistidos por usuário no localStorage).
-   * Os contatos permanecem no Supabase/leads — apenas ficam fora da lista de disparo local.
-   *
-   * Não inicializado de forma síncrona: o auth do Supabase é assíncrono, então user?.id pode
-   * ser null na montagem (especialmente em hard reload). O useEffect abaixo carrega do
-   * localStorage assim que user.id fica disponível.
-   */
-  const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set<string>());
-
-  // Carrega exclusões do localStorage quando user.id fica disponível (cobre hard reload / SHIFT+F5)
-  useEffect(() => {
-    if (!user?.id) return;
-    try {
-      const stored = localStorage.getItem(`disparador_excluded_${user.id}`);
-      setExcludedIds(stored ? new Set<string>(JSON.parse(stored)) : new Set<string>());
-    } catch { /* ignore */ }
-  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Quando excludedIds muda (load inicial ou remoção), garante que a lista já carregada
-  // também seja filtrada — cobre o caso em que savedContacts carregou antes do auth resolver.
-  useEffect(() => {
-    if (excludedIds.size === 0) return;
-    setContacts(prev => {
-      const filtered = prev.filter(c => !excludedIds.has(c.id));
-      return filtered.length === prev.length ? prev : filtered;
-    });
-  }, [excludedIds]); // eslint-disable-line react-hooks/exhaustive-deps
+  // (exclusões persistidas no VPS via desativarContacts — sem localStorage)
 
   /**
    * Rastreia quais telefones já foram enriquecidos com dados do funil.
@@ -135,15 +108,6 @@ export function Dashboard() {
       .catch(() => {}); // falha silenciosa — backend pode estar offline
   }, [contacts.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const addToExcluded = useCallback((ids: string[]) => {
-    setExcludedIds(prev => {
-      const next = new Set(prev);
-      ids.forEach(id => next.add(id));
-      if (user?.id) localStorage.setItem(`disparador_excluded_${user.id}`, JSON.stringify([...next]));
-      return next;
-    });
-  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const {
     activeSession,
     isStarting,
@@ -156,6 +120,7 @@ export function Dashboard() {
     loading: contactsLoading,
     saveContactsFromFile,
     updateContactMessage,
+    desativarContacts,
   } = useContacts();
   const { config: llmConfig } = useLLMConfig();
   const { instances: whatsappInstances } = useWhatsAppInstances();
@@ -222,10 +187,13 @@ export function Dashboard() {
             updateContactMessage(c.telefone, c.mensagemIA).catch(() => {});
           });
 
-          // Remove leads com erro da lista de disparo (oculta via excludedIds/localStorage).
-          // O contato permanece no banco — apenas sai da fila visual.
+          // Remove leads com erro da lista de disparo — desativa no VPS (cross-device).
+          // O backend já marca desativado durante o processamento; este bloco cobre
+          // o caso em que o frontend detecta o erro via polling antes do próximo load.
           if (newlyErrored.length > 0) {
-            addToExcluded(newlyErrored.map(c => c.id));
+            const erroredIds = newlyErrored.map(c => c.id);
+            setContacts(prev => prev.filter(c => !erroredIds.includes(c.id)));
+            desativarContacts(erroredIds);
           }
         })
         .catch(() => {});
@@ -270,13 +238,12 @@ export function Dashboard() {
     contacts.filter(r => r.status === 'pendente' || r.status === 'erro')
   ).length;
 
-  // Ao carregar: se a lista de disparo estiver vazia, preenche com os contatos salvos no perfil
-  // IDs em excludedIds (localStorage) são omitidos — o lead continua no Supabase, apenas sai da fila.
+  // Ao carregar: se a lista de disparo estiver vazia, preenche com os contatos salvos no perfil.
+  // Contatos desativados já são filtrados pelo backend (GET /api/contacts WHERE desativado IS NOT TRUE).
   useEffect(() => {
     if (contactsLoading || contacts.length > 0) return;
     if (savedContacts.length > 0) {
       const asContactRows: ContactRow[] = savedContacts
-        .filter(c => !excludedIds.has(c.id)) // eslint-disable-line react-hooks/exhaustive-deps
         .map((c) => ({
           id: c.id,
           empresa: c.empresa,
@@ -289,7 +256,7 @@ export function Dashboard() {
         }));
       setContacts(asContactRows);
     }
-  }, [contactsLoading, savedContacts, contacts.length]); // excludedIds omitido — o useEffect separado filtra a lista caso carregue após os contatos
+  }, [contactsLoading, savedContacts, contacts.length]);
 
   // Aviso ao fechar aba apenas durante a fase de geração de IA (lado cliente).
   // Após o batch estar no backend, fechar o browser é seguro — o servidor continua.
@@ -437,13 +404,13 @@ export function Dashboard() {
 
   const handleRemove = (id: string) => {
     setContacts(prev => prev.filter(c => c.id !== id));
-    addToExcluded([id]);
+    desativarContacts([id]);
   };
 
   const handleRemoveSelected = (ids: string[]) => {
     const idSet = new Set(ids);
     setContacts(prev => prev.filter(c => !idSet.has(c.id)));
-    addToExcluded(ids);
+    desativarContacts(ids);
   };
 
   const handleFileLoaded = async (newContacts: ContactRow[]) => {

@@ -493,6 +493,13 @@ async function processDisparoSession(sessionId, instanceName) {
                            updated_at  = NOW()`,
             [sessionUserId, telNormErr, `Erro no disparo: ${errMsg}`]
           ).catch(() => {});
+
+          // Desativa o contato na tabela contacts para sumir da fila em qualquer dispositivo
+          db.query(
+            `UPDATE contacts SET desativado = true, updated_at = NOW()
+             WHERE user_id = $1 AND telefone = $2`,
+            [sessionUserId, item.telefone]
+          ).catch(() => {});
         }
       }
 
@@ -1045,12 +1052,15 @@ async function ensureContactsTable() {
       telefone             TEXT NOT NULL,
       ultima_mensagem      TEXT,
       ultima_mensagem_data TIMESTAMPTZ,
+      desativado           BOOLEAN DEFAULT false,
       created_at           TIMESTAMPTZ DEFAULT NOW(),
       updated_at           TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(user_id, telefone)
     )
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_contacts_user ON contacts(user_id, created_at DESC)`);
+  // Migration: adiciona coluna desativado em tabelas existentes (idempotente)
+  await db.query(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS desativado BOOLEAN DEFAULT false`);
 }
 
 // GET /api/contacts?user_id=
@@ -1060,7 +1070,7 @@ app.get('/api/contacts', async (req, res) => {
   const { rows } = await db.query(
     `SELECT id, user_id, empresa, telefone, ultima_mensagem, ultima_mensagem_data, created_at, updated_at
      FROM contacts
-     WHERE user_id = $1
+     WHERE user_id = $1 AND desativado IS NOT TRUE
      ORDER BY created_at DESC`,
     [user_id]
   );
@@ -1097,11 +1107,27 @@ app.post('/api/contacts/bulk', async (req, res) => {
     `INSERT INTO contacts (user_id, empresa, telefone)
      VALUES ${valueParts.join(',')}
      ON CONFLICT (user_id, telefone)
-     DO UPDATE SET empresa = EXCLUDED.empresa, updated_at = NOW()`,
+     DO UPDATE SET empresa = EXCLUDED.empresa, desativado = false, updated_at = NOW()`,
     params
   );
 
   res.json({ count: deduped.length });
+});
+
+// PATCH /api/contacts/desativar — marca contatos como desativados (cross-device, substitui localStorage excludedIds)
+// Body: { user_id, ids: string[] }
+app.patch('/api/contacts/desativar', async (req, res) => {
+  const { user_id, ids } = req.body;
+  if (!user_id || !Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'user_id e ids[] obrigatórios' });
+  }
+  const placeholders = ids.map((_, i) => `$${i + 2}`).join(',');
+  await db.query(
+    `UPDATE contacts SET desativado = true, updated_at = NOW()
+     WHERE user_id = $1 AND id = ANY(ARRAY[${placeholders}]::uuid[])`,
+    [user_id, ...ids]
+  );
+  res.json({ ok: true, count: ids.length });
 });
 
 // PATCH /api/contacts/message — atualiza última mensagem enviada
