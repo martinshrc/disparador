@@ -263,10 +263,71 @@ async function checkCredits(apiKey) {
   }
 }
 
-async function getActiveKey() {
-  for (let i = 0; i < API_KEYS.length; i++) {
-    const credits = await checkCredits(API_KEYS[i]);
-    if (credits > 0) return { key: API_KEYS[i], index: i + 1, credits };
+// ─── CNPJA Keys — env vars + DB ───────────────────────────────────────────────
+async function ensureCnpjaKeysTable() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS cnpja_keys (
+      id         SERIAL PRIMARY KEY,
+      key_value  TEXT UNIQUE NOT NULL,
+      label      TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+}
+
+/**
+ * Retorna todas as chaves CNPJA disponíveis: env vars + tabela cnpja_keys.
+ * Formato: [{ id, key_value, label, source, can_delete }]
+ */
+async function getAllApiKeys() {
+  const envKeys = API_KEYS.map((k, i) => ({
+    id: `env_${i + 1}`,
+    key_value: k,
+    label: `Chave ${i + 1}`,
+    source: 'env',
+    can_delete: false,
+  }));
+  try {
+    const { rows } = await db.query(
+      'SELECT id, key_value, label FROM cnpja_keys ORDER BY id'
+    );
+    const dbKeys = rows.map(r => ({
+      id: `db_${r.id}`,
+      key_value: r.key_value,
+      label: r.label || `Chave extra #${r.id}`,
+      source: 'db',
+      can_delete: true,
+    }));
+    return [...envKeys, ...dbKeys];
+  } catch {
+    return envKeys;
+  }
+}
+
+/**
+ * Retorna a chave ativa para uso na API CNPJA.
+ * Se preferredKeyId fornecido, usa aquela chave especificamente (sem fallback para outras).
+ * Caso contrário, usa a primeira chave com créditos disponíveis.
+ */
+async function getActiveKey(preferredKeyId = null) {
+  const allKeys = await getAllApiKeys();
+
+  if (preferredKeyId) {
+    const preferred = allKeys.find(k => k.id === preferredKeyId);
+    if (preferred) {
+      const credits = await checkCredits(preferred.key_value);
+      if (credits > 0) {
+        return { key: preferred.key_value, id: preferred.id, label: preferred.label, index: allKeys.indexOf(preferred) + 1, credits };
+      }
+      return null; // chave preferida sem créditos — não faz fallback
+    }
+  }
+
+  for (let i = 0; i < allKeys.length; i++) {
+    const credits = await checkCredits(allKeys[i].key_value);
+    if (credits > 0) {
+      return { key: allKeys[i].key_value, id: allKeys[i].id, label: allKeys[i].label, index: i + 1, credits };
+    }
   }
   return null;
 }
@@ -579,14 +640,72 @@ app.get('/api/dispatch/history', async (req, res) => {
 
 // ─── GET /api/leads/credits ───────────────────────────────────────────────────
 app.get('/api/leads/credits', async (_req, res) => {
+  const allKeys = await getAllApiKeys();
   const results = [];
   let total = 0;
-  for (let i = 0; i < API_KEYS.length; i++) {
-    const credits = await checkCredits(API_KEYS[i]);
+  for (let i = 0; i < allKeys.length; i++) {
+    const credits = await checkCredits(allKeys[i].key_value);
     total += credits;
-    results.push({ index: i + 1, credits, key_hint: API_KEYS[i].slice(0, 8) + '...' });
+    results.push({
+      id: allKeys[i].id,
+      index: i + 1,
+      label: allKeys[i].label,
+      credits,
+      key_hint: allKeys[i].key_value.slice(0, 8) + '...',
+      source: allKeys[i].source,
+      can_delete: allKeys[i].can_delete,
+    });
   }
   res.json({ keys: results, total });
+});
+
+// ─── GET /api/leads/keys ──────────────────────────────────────────────────────
+// Lista todas as chaves CNPJA (env + DB) com créditos. Mesmo payload de /credits.
+app.get('/api/leads/keys', async (_req, res) => {
+  const allKeys = await getAllApiKeys();
+  const results = await Promise.all(allKeys.map(async (k, i) => ({
+    id: k.id,
+    index: i + 1,
+    label: k.label,
+    key_hint: k.key_value.slice(0, 8) + '...',
+    credits: await checkCredits(k.key_value),
+    source: k.source,
+    can_delete: k.can_delete,
+  })));
+  res.json({ keys: results });
+});
+
+// ─── POST /api/leads/keys ─────────────────────────────────────────────────────
+// Adiciona nova chave CNPJA via painel.
+app.post('/api/leads/keys', async (req, res) => {
+  const { key_value, label } = req.body;
+  if (!key_value?.trim()) {
+    return res.status(400).json({ error: 'key_value é obrigatório.' });
+  }
+  const credits = await checkCredits(key_value.trim());
+  try {
+    const { rows } = await db.query(
+      `INSERT INTO cnpja_keys (key_value, label) VALUES ($1, $2) RETURNING id`,
+      [key_value.trim(), (label || '').trim()]
+    );
+    res.json({ ok: true, id: `db_${rows[0].id}`, credits });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'Chave já cadastrada.' });
+    throw e;
+  }
+});
+
+// ─── DELETE /api/leads/keys/:id ───────────────────────────────────────────────
+// Remove chave adicionada via painel (apenas chaves DB; env vars não podem ser removidas aqui).
+app.delete('/api/leads/keys/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!id.startsWith('db_')) {
+    return res.status(400).json({ error: 'Apenas chaves adicionadas no painel podem ser removidas.' });
+  }
+  const dbId = parseInt(id.slice(3), 10);
+  if (isNaN(dbId)) return res.status(400).json({ error: 'ID inválido.' });
+  await db.query('DELETE FROM cnpja_keys WHERE id = $1', [dbId]);
+  res.json({ ok: true });
 });
 
 // ─── GET /api/leads/stats ─────────────────────────────────────────────────────
@@ -707,7 +826,7 @@ app.get('/api/leads/pool', async (req, res) => {
 // ─── POST /api/leads/fetch ────────────────────────────────────────────────────
 // Busca empresas no CNPJA e salva no pool. Usa SSE para progresso em tempo real.
 app.post('/api/leads/fetch', async (req, res) => {
-  const { estado, cnae, limite = 20 } = req.body;
+  const { estado, cnae, limite = 20, preferredKeyId } = req.body;
 
   if (!estado || !cnae) {
     return res.status(400).json({ error: 'estado e cnae são obrigatórios' });
@@ -721,13 +840,16 @@ app.post('/api/leads/fetch', async (req, res) => {
 
   send({ type: 'start', message: 'Verificando créditos...' });
 
-  const keyInfo = await getActiveKey();
+  const keyInfo = await getActiveKey(preferredKeyId || null);
   if (!keyInfo) {
-    send({ type: 'error', message: 'Todas as chaves CNPJA estão sem créditos.' });
+    const msg = preferredKeyId
+      ? 'A chave selecionada não tem créditos disponíveis. Escolha outra chave ou selecione "Auto".'
+      : 'Todas as chaves CNPJA estão sem créditos.';
+    send({ type: 'error', message: msg });
     return res.end();
   }
 
-  send({ type: 'key', message: `Usando Chave ${keyInfo.index} (${keyInfo.credits} créditos)` });
+  send({ type: 'key', message: `Usando ${keyInfo.label} (${keyInfo.credits} créditos)` });
 
   const sdk = new Cnpja({ apiKey: keyInfo.key });
   let saved = 0;
@@ -779,12 +901,13 @@ app.post('/api/leads/fetch', async (req, res) => {
     }
   }
 
+  const allKeys = await getAllApiKeys();
   const updatedCredits = [];
   let totalCredits = 0;
-  for (let i = 0; i < API_KEYS.length; i++) {
-    const c = await checkCredits(API_KEYS[i]);
+  for (let i = 0; i < allKeys.length; i++) {
+    const c = await checkCredits(allKeys[i].key_value);
     totalCredits += c;
-    updatedCredits.push({ index: i + 1, credits: c });
+    updatedCredits.push({ id: allKeys[i].id, index: i + 1, label: allKeys[i].label, credits: c, source: allKeys[i].source, can_delete: allKeys[i].can_delete, key_hint: allKeys[i].key_value.slice(0, 8) + '...' });
   }
 
   send({ type: 'done', saved, skipped, credits: updatedCredits, totalCredits });
@@ -1178,6 +1301,7 @@ const PORT = cfg('PORT') || 3001;
 app.listen(PORT, async () => {
   console.log(`✅ API server rodando em http://localhost:${PORT}`);
   await ensureContactsTable();
+  await ensureCnpjaKeysTable();
   // Retoma sessões de disparo que estavam rodando antes do restart
   await resumePendingSessions();
 });
