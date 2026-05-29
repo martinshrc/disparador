@@ -3,13 +3,14 @@ import { Link } from 'react-router-dom';
 import {
   ArrowLeft, Search, RefreshCw, Building2,
   Phone, Mail, MapPin, Zap, Database, ChevronLeft, ChevronRight,
-  SendHorizontal, ChevronsUpDown, Check, ListChecks,
+  SendHorizontal, ChevronsUpDown, Check, ListChecks, KeyRound, Plus, Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 import {
   Select, SelectContent, SelectGroup, SelectItem,
   SelectLabel, SelectTrigger, SelectValue,
@@ -24,6 +25,9 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { CNAES, CNAE_CATEGORIES, ESTADOS } from '@/data/cnaes';
@@ -60,9 +64,13 @@ interface SelectLead {
 }
 
 interface CreditInfo {
+  id: string;
   index: number;
+  label: string;
   credits: number;
   key_hint: string;
+  source: 'env' | 'db';
+  can_delete: boolean;
 }
 
 interface Stats {
@@ -116,6 +124,16 @@ export default function ColetarLeads() {
   // Credits
   const [credits, setCredits] = useState<CreditInfo[]>([]);
   const [totalCredits, setTotalCredits] = useState<number | null>(null);
+
+  // Chave preferida (null = auto)
+  const [preferredKeyId, setPreferredKeyId] = useState<string | null>(null);
+
+  // Dialog gerenciar chaves
+  const [keysDialogOpen, setKeysDialogOpen] = useState(false);
+  const [newKeyValue, setNewKeyValue] = useState('');
+  const [newKeyLabel, setNewKeyLabel] = useState('');
+  const [savingKey, setSavingKey] = useState(false);
+  const [deletingKeyId, setDeletingKeyId] = useState<string | null>(null);
 
   // Stats
   const [stats, setStats] = useState<Stats | null>(null);
@@ -294,6 +312,54 @@ export default function ColetarLeads() {
     }
   }
 
+  // ─── Gerenciar chaves CNPJA ─────────────────────────────────────────────
+  async function handleAddKey() {
+    if (!newKeyValue.trim()) {
+      toast({ title: 'Cole a chave CNPJA antes de salvar', variant: 'destructive' });
+      return;
+    }
+    setSavingKey(true);
+    try {
+      const r = await apiClient.post('/api/leads/keys', {
+        key_value: newKeyValue.trim(),
+        label: newKeyLabel.trim(),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        toast({ title: data.error ?? 'Erro ao salvar chave', variant: 'destructive' });
+        return;
+      }
+      toast({ title: 'Chave adicionada!', description: `${data.credits} crédito${data.credits !== 1 ? 's' : ''} disponíveis.` });
+      setNewKeyValue('');
+      setNewKeyLabel('');
+      await loadCredits();
+    } catch {
+      toast({ title: 'Erro ao adicionar chave', variant: 'destructive' });
+    } finally {
+      setSavingKey(false);
+    }
+  }
+
+  async function handleDeleteKey(id: string) {
+    setDeletingKeyId(id);
+    try {
+      const r = await apiClient.delete(`/api/leads/keys/${id}`);
+      if (!r.ok) {
+        const data = await r.json();
+        toast({ title: data.error ?? 'Erro ao remover chave', variant: 'destructive' });
+        return;
+      }
+      toast({ title: 'Chave removida.' });
+      // Se a chave removida era a preferida, volta para auto
+      if (preferredKeyId === id) setPreferredKeyId(null);
+      await loadCredits();
+    } catch {
+      toast({ title: 'Erro ao remover chave', variant: 'destructive' });
+    } finally {
+      setDeletingKeyId(null);
+    }
+  }
+
   // ─── Trigger CNPJA fetch (SSE) ──────────────────────────────────────────
   async function handleFetch() {
     if (!selectedCnae || !selectedEstado) {
@@ -309,9 +375,10 @@ export default function ColetarLeads() {
     setIsFetching(true);
     setFetchLog(['Iniciando busca...']);
 
-    const resp = await apiClient.stream('/api/leads/fetch', {
-      estado: selectedEstado, cnae: selectedCnae, limite,
-    });
+    const body: Record<string, unknown> = { estado: selectedEstado, cnae: selectedCnae, limite };
+    if (preferredKeyId) body.preferredKeyId = preferredKeyId;
+
+    const resp = await apiClient.stream('/api/leads/fetch', body);
 
     const reader = resp.body!.getReader();
     const decoder = new TextDecoder();
@@ -492,22 +559,51 @@ export default function ColetarLeads() {
               </Select>
             </div>
 
-            <div className="flex items-end">
+            {/* Chave preferida */}
+            <div className="w-52">
+              <label className="text-xs text-muted-foreground mb-1 block">Chave CNPJA</label>
+              <Select
+                value={preferredKeyId ?? 'auto'}
+                onValueChange={v => setPreferredKeyId(v === 'auto' ? null : v)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto (primeira com créditos)</SelectItem>
+                  {credits.map(c => (
+                    <SelectItem key={c.id} value={c.id} disabled={c.credits === 0}>
+                      {c.label} — {c.credits} crédito{c.credits !== 1 ? 's' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-end gap-2">
               <Button onClick={handleFetch} disabled={isFetching} className="gap-2">
                 {isFetching
                   ? <><RefreshCw className="h-4 w-4 animate-spin" /> Buscando...</>
                   : <><Search className="h-4 w-4" /> Buscar empresas</>
                 }
               </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                title="Gerenciar chaves CNPJA"
+                onClick={() => setKeysDialogOpen(true)}
+              >
+                <KeyRound className="h-4 w-4" />
+              </Button>
             </div>
           </div>
 
           {/* Créditos por chave */}
           {credits.length > 0 && (
-            <div className="flex gap-2 flex-wrap">
+            <div className="flex gap-2 flex-wrap items-center">
               {credits.map(c => (
-                <Badge key={c.index} variant={c.credits > 0 ? 'secondary' : 'destructive'} className="text-xs">
-                  Chave {c.index}: {c.credits} crédito{c.credits !== 1 ? 's' : ''}
+                <Badge key={c.id} variant={c.credits > 0 ? 'secondary' : 'destructive'} className="text-xs">
+                  {c.label}: {c.credits} crédito{c.credits !== 1 ? 's' : ''}
                 </Badge>
               ))}
               <Button variant="ghost" size="sm" className="h-5 text-xs" onClick={loadCredits}>
@@ -774,6 +870,87 @@ export default function ColetarLeads() {
           )}
         </CardContent>
       </Card>
+      {/* Dialog — Gerenciar Chaves CNPJA */}
+      <Dialog open={keysDialogOpen} onOpenChange={setKeysDialogOpen}>
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <KeyRound className="h-5 w-5" />
+              Gerenciar Chaves CNPJA
+            </DialogTitle>
+            <DialogDescription>
+              Adicione ou remova chaves da API CNPJA. Chaves de variáveis de ambiente só podem ser removidas pelo EasyPanel.
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Lista de chaves */}
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {credits.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">Nenhuma chave cadastrada.</p>
+            ) : (
+              credits.map(c => (
+                <div key={c.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Badge variant={c.credits > 0 ? 'secondary' : 'destructive'} className="shrink-0 text-xs">
+                      {c.credits} crd
+                    </Badge>
+                    <span className="font-medium truncate">{c.label}</span>
+                    <span className="text-xs text-muted-foreground shrink-0">{c.key_hint}</span>
+                    {c.source === 'env' && (
+                      <Badge variant="outline" className="text-xs shrink-0">env</Badge>
+                    )}
+                  </div>
+                  {c.can_delete && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 shrink-0 text-destructive hover:text-destructive"
+                      disabled={deletingKeyId === c.id}
+                      onClick={() => handleDeleteKey(c.id)}
+                    >
+                      {deletingKeyId === c.id
+                        ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        : <Trash2 className="h-3.5 w-3.5" />
+                      }
+                    </Button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Adicionar nova chave */}
+          <div className="border-t pt-4 space-y-3">
+            <p className="text-sm font-medium">Adicionar nova chave</p>
+            <div className="grid gap-2">
+              <Label htmlFor="newKeyLabel" className="text-xs">Nome (opcional)</Label>
+              <Input
+                id="newKeyLabel"
+                placeholder="Ex: Chave cliente X"
+                value={newKeyLabel}
+                onChange={e => setNewKeyLabel(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="newKeyValue" className="text-xs">Chave da API CNPJA</Label>
+              <Input
+                id="newKeyValue"
+                type="password"
+                placeholder="Cole a chave aqui..."
+                value={newKeyValue}
+                onChange={e => setNewKeyValue(e.target.value)}
+                autoComplete="off"
+              />
+            </div>
+            <Button onClick={handleAddKey} disabled={savingKey} className="w-full gap-2">
+              {savingKey
+                ? <><RefreshCw className="h-4 w-4 animate-spin" /> Salvando...</>
+                : <><Plus className="h-4 w-4" /> Adicionar chave</>
+              }
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
