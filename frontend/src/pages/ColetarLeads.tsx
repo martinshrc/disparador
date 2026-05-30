@@ -445,25 +445,22 @@ export default function ColetarLeads() {
         </CardHeader>
         <CardContent className="space-y-4">
           <Tabs value={activeSource} onValueChange={v => { setActiveSource(v as 'cnpja' | 'maps'); setFetchLog([]); }}>
-            <TabsList className="mb-4">
-              <TabsTrigger value="cnpja" className="gap-2">
+            <TabsList className="mb-4 w-full sm:w-auto">
+              <TabsTrigger value="cnpja" className="gap-2 flex-1 sm:flex-none">
                 <Database className="h-3.5 w-3.5" />
-                Receita Federal — CNPJA
+                Receita Federal
               </TabsTrigger>
-              <TabsTrigger value="maps" className="gap-2">
+              <TabsTrigger value="maps" className="gap-2 flex-1 sm:flex-none">
                 <MapIcon className="h-3.5 w-3.5" />
-                Google Maps — Apify
+                Google Maps
               </TabsTrigger>
             </TabsList>
 
             {/* ─── ABA CNPJA ──────────────────────────────────────────────────── */}
             <TabsContent value="cnpja" className="space-y-3 mt-0">
-              <p className="text-xs text-muted-foreground">
-                Dados da Receita Federal via API CNPJA. Inclui CNPJ, porte, CNAE e contatos cadastrados.
-              </p>
-              <div className="flex flex-wrap gap-3">
+              <div className="grid grid-cols-1 sm:flex sm:flex-wrap gap-3">
                 {/* Segmento */}
-                <div className="flex-1 min-w-[200px]">
+                <div className="sm:flex-1 sm:min-w-[200px]">
                   <label className="text-xs text-muted-foreground mb-1 block">Segmento</label>
                   <Popover open={cnaePopoverOpen} onOpenChange={setCnaePopoverOpen}>
                     <PopoverTrigger asChild>
@@ -474,7 +471,7 @@ export default function ColetarLeads() {
                         <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                       </Button>
                     </PopoverTrigger>
-                    <PopoverContent className="w-[340px] p-0" align="start">
+                    <PopoverContent className="w-[min(340px,calc(100vw-2rem))] p-0" align="start">
                       <Command filter={(value, search) => value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0}>
                         <CommandInput placeholder="Buscar segmento..." />
                         <CommandList className="max-h-72">
@@ -495,29 +492,30 @@ export default function ColetarLeads() {
                   </Popover>
                 </div>
 
-                {/* Estado */}
-                <div className="w-32">
-                  <label className="text-xs text-muted-foreground mb-1 block">Estado</label>
-                  <Select value={selectedEstado} onValueChange={setSelectedEstado}>
-                    <SelectTrigger><SelectValue placeholder="UF" /></SelectTrigger>
-                    <SelectContent>{ESTADOS.map(uf => <SelectItem key={uf} value={uf}>{uf}</SelectItem>)}</SelectContent>
-                  </Select>
-                </div>
+                {/* Estado + Quantidade lado a lado no mobile */}
+                <div className="grid grid-cols-2 sm:contents gap-3">
+                  <div className="sm:w-32">
+                    <label className="text-xs text-muted-foreground mb-1 block">Estado</label>
+                    <Select value={selectedEstado} onValueChange={setSelectedEstado}>
+                      <SelectTrigger className="w-full"><SelectValue placeholder="UF" /></SelectTrigger>
+                      <SelectContent>{ESTADOS.map(uf => <SelectItem key={uf} value={uf}>{uf}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
 
-                {/* Quantidade */}
-                <div className="w-32">
-                  <label className="text-xs text-muted-foreground mb-1 block">Quantidade</label>
-                  <Select value={String(limite)} onValueChange={v => setLimite(parseInt(v))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>{[10, 20, 50, 100].map(n => <SelectItem key={n} value={String(n)}>{n} empresas</SelectItem>)}</SelectContent>
-                  </Select>
+                  <div className="sm:w-32">
+                    <label className="text-xs text-muted-foreground mb-1 block">Quantidade</label>
+                    <Select value={String(limite)} onValueChange={v => setLimite(parseInt(v))}>
+                      <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>{[10, 20, 50, 100].map(n => <SelectItem key={n} value={String(n)}>{n} empresas</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
                 </div>
 
                 {/* Chave */}
-                <div className="w-52">
-                  <label className="text-xs text-muted-foreground mb-1 block">Chave CNPJA</label>
+                <div className="sm:w-52">
+                  <label className="text-xs text-muted-foreground mb-1 block">Chave</label>
                   <Select value={preferredKeyId ?? 'auto'} onValueChange={v => setPreferredKeyId(v === 'auto' ? null : v)}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="auto">Auto (primeira com créditos)</SelectItem>
                       {credits.map(c => (
@@ -529,11 +527,11 @@ export default function ColetarLeads() {
                   </Select>
                 </div>
 
-                <div className="flex items-end gap-2">
-                  <Button onClick={handleFetchCnpja} disabled={isFetching} className="gap-2">
+                <div className="flex gap-2 sm:items-end">
+                  <Button onClick={handleFetchCnpja} disabled={isFetching} className="gap-2 flex-1 sm:flex-none">
                     {isFetching ? <><RefreshCw className="h-4 w-4 animate-spin" /> Buscando...</> : <><Search className="h-4 w-4" /> Buscar</>}
                   </Button>
-                  <Button variant="outline" size="icon" title="Gerenciar chaves CNPJA" onClick={() => setKeysDialogOpen(true)}>
+                  <Button variant="outline" size="icon" title="Gerenciar chaves" onClick={() => setKeysDialogOpen(true)}>
                     <KeyRound className="h-4 w-4" />
                   </Button>
                 </div>
@@ -556,12 +554,9 @@ export default function ColetarLeads() {
 
             {/* ─── ABA GOOGLE MAPS ─────────────────────────────────────────────── */}
             <TabsContent value="maps" className="space-y-3 mt-0">
-              <p className="text-xs text-muted-foreground">
-                Dados do Google Maps via Apify. Telefones e endereços mais atualizados que a Receita Federal.
-              </p>
-              <div className="flex flex-wrap gap-3">
-                {/* Segmento (mesmo combobox CNAE — label vira query) */}
-                <div className="flex-1 min-w-[200px]">
+              <div className="grid grid-cols-1 sm:flex sm:flex-wrap gap-3">
+                {/* Tipo de negócio */}
+                <div className="sm:flex-1 sm:min-w-[200px]">
                   <label className="text-xs text-muted-foreground mb-1 block">Tipo de negócio</label>
                   <Popover open={mapsSegPopoverOpen} onOpenChange={setMapsSegPopoverOpen}>
                     <PopoverTrigger asChild>
@@ -572,7 +567,7 @@ export default function ColetarLeads() {
                         <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                       </Button>
                     </PopoverTrigger>
-                    <PopoverContent className="w-[340px] p-0" align="start">
+                    <PopoverContent className="w-[min(340px,calc(100vw-2rem))] p-0" align="start">
                       <Command filter={(value, search) => value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0}>
                         <CommandInput placeholder="Buscar tipo de negócio..." />
                         <CommandList className="max-h-72">
@@ -597,55 +592,53 @@ export default function ColetarLeads() {
                   </Popover>
                 </div>
 
-                {/* Estado */}
-                <div className="w-32">
-                  <label className="text-xs text-muted-foreground mb-1 block">Estado *</label>
-                  <Select value={mapsEstado} onValueChange={setMapsEstado}>
-                    <SelectTrigger><SelectValue placeholder="UF" /></SelectTrigger>
-                    <SelectContent>{ESTADOS.map(uf => <SelectItem key={uf} value={uf}>{uf}</SelectItem>)}</SelectContent>
-                  </Select>
+                {/* Estado + Cidade lado a lado no mobile */}
+                <div className="grid grid-cols-2 sm:contents gap-3">
+                  <div className="sm:w-32">
+                    <label className="text-xs text-muted-foreground mb-1 block">Estado</label>
+                    <Select value={mapsEstado} onValueChange={setMapsEstado}>
+                      <SelectTrigger className="w-full"><SelectValue placeholder="UF" /></SelectTrigger>
+                      <SelectContent>{ESTADOS.map(uf => <SelectItem key={uf} value={uf}>{uf}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="sm:w-44">
+                    <label className="text-xs text-muted-foreground mb-1 block">Cidade</label>
+                    <Select value={mapsCidade} onValueChange={setMapsCidade} disabled={!mapsEstado || loadingCidades}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder={loadingCidades ? 'Carregando...' : !mapsEstado ? 'Escolha o estado' : 'Cidade'} />
+                      </SelectTrigger>
+                      <SelectContent className="max-h-64">
+                        {cidades.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
 
-                {/* Cidade */}
-                <div className="w-48">
-                  <label className="text-xs text-muted-foreground mb-1 block">Cidade *</label>
-                  <Select value={mapsCidade} onValueChange={setMapsCidade} disabled={!mapsEstado || loadingCidades}>
-                    <SelectTrigger>
-                      <SelectValue placeholder={loadingCidades ? 'Carregando...' : !mapsEstado ? 'Selecione o estado' : 'Cidade'} />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-64">
-                      {cidades.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                {/* Bairro + Quantidade lado a lado no mobile */}
+                <div className="grid grid-cols-2 sm:contents gap-3">
+                  <div className="sm:w-40">
+                    <label className="text-xs text-muted-foreground mb-1 block">Bairro (opcional)</label>
+                    <Input className="w-full" placeholder="Ex: Moema" value={mapsBairro} onChange={e => setMapsBairro(e.target.value)} />
+                  </div>
+
+                  <div className="sm:w-32">
+                    <label className="text-xs text-muted-foreground mb-1 block">Quantidade</label>
+                    <Select value={String(mapsLimite)} onValueChange={v => setMapsLimite(parseInt(v))}>
+                      <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {[10, 20, 50, 100, 200].map(n => <SelectItem key={n} value={String(n)}>{n} empresas</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
 
-                {/* Bairro (opcional) */}
-                <div className="w-40">
-                  <label className="text-xs text-muted-foreground mb-1 block">Bairro (opcional)</label>
-                  <Input placeholder="Ex: Moema" value={mapsBairro} onChange={e => setMapsBairro(e.target.value)} />
-                </div>
-
-                {/* Quantidade */}
-                <div className="w-32">
-                  <label className="text-xs text-muted-foreground mb-1 block">Quantidade</label>
-                  <Select value={String(mapsLimite)} onValueChange={v => setMapsLimite(parseInt(v))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {[10, 20, 50, 100, 200].map(n => <SelectItem key={n} value={String(n)}>{n} empresas</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="flex items-end">
-                  <Button onClick={handleFetchMaps} disabled={isFetching} className="gap-2">
+                <div className="sm:flex sm:items-end">
+                  <Button onClick={handleFetchMaps} disabled={isFetching} className="gap-2 w-full sm:w-auto">
                     {isFetching ? <><RefreshCw className="h-4 w-4 animate-spin" /> Buscando...</> : <><MapIcon className="h-4 w-4" /> Buscar</>}
                   </Button>
                 </div>
               </div>
-
-              <p className="text-xs text-muted-foreground/60">
-                Custo: ~$0,50 por 1.000 resultados no Apify. O bairro é opcional — útil para segmentar dentro de cidades grandes.
-              </p>
             </TabsContent>
           </Tabs>
 
