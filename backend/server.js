@@ -67,6 +67,9 @@ const API_KEYS = [
   cfg('CNPJA_API_KEY_4'),
 ].filter(Boolean);
 
+const APIFY_TOKEN = cfg('APIFY_TOKEN');
+const APIFY_ACTOR = 'QaFBMgHDLJzHoOEMf'; // scraperlink/google-maps-scraper
+
 const db = new Pool({
   host:     cfg('PG_HOST'),
   port:     parseInt(cfg('PG_PORT') || '5432'),
@@ -389,6 +392,50 @@ async function saveOffice(office) {
       mainActivity.text ?? null,
       'cnpja',
       JSON.stringify(office),
+    ]
+  );
+  return rowCount > 0;
+}
+
+// ─── Salvar lead do Google Maps (Apify) ───────────────────────────────────────
+async function saveMapLead(item, segmentoLabel) {
+  // Extrai e valida o telefone — sem telefone o lead é inútil para disparo
+  const rawPhone = (item.phoneUnformatted ?? item.phone ?? '').replace(/\D/g, '');
+  if (!rawPhone || rawPhone.length < 10) return false;
+
+  // Prefixo 55 se necessário
+  const phone = rawPhone.startsWith('55') && rawPhone.length >= 12 ? rawPhone : `55${rawPhone}`;
+
+  const cep = (item.postalCode ?? '').replace(/\D/g, '') || null;
+  const estado = (item.state ?? '').slice(0, 2) || null;
+
+  const { rowCount } = await db.query(
+    `INSERT INTO blitzar_leads_pool
+      (razao_social, nome_fantasia, telefone,
+       logradouro, bairro, cidade, estado, cep,
+       latitude, longitude, website,
+       segmento, cnae_principal_texto,
+       fonte, dados_brutos)
+     SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'google_maps',$14
+     WHERE NOT EXISTS (
+       SELECT 1 FROM blitzar_leads_pool
+       WHERE telefone = $3 AND fonte = 'google_maps'
+     )`,
+    [
+      item.title ?? null,
+      item.title ?? null,
+      phone,
+      item.street ?? item.address ?? null,
+      item.neighborhood ?? null,
+      item.city ?? null,
+      estado,
+      cep,
+      item.latitude ?? null,
+      item.longitude ?? null,
+      item.website ?? null,
+      segmentoLabel ?? item.categoryName ?? null,
+      item.categoryName ?? null,
+      JSON.stringify(item),
     ]
   );
   return rowCount > 0;
@@ -858,12 +905,27 @@ app.post('/api/leads/fetch', async (req, res) => {
   const lim = parseInt(String(limite));
   let done = false;
 
+  // Plano gratuito CNPJA: ~10 req/min. Cada iteração do search() é 1 chamada à API.
+  // Delay proativo entre páginas evita 429 antes mesmo de começar a busca.
+  const RATE_LIMIT_DELAY_MS = 7000; // 7s entre páginas ≈ 8–9 req/min (abaixo do limite de 10)
+  const RATE_LIMIT_RECOVERY_MS = 65000; // 65s de espera ao receber 429 (janela de 1 min + buffer)
+
+  let pageIndex = 0;
+
   try {
     for await (const page of sdk.office.search({
       'status.id.in': [2],
       'address.state.in': [estado],
       'mainActivity.id.in': [parseInt(String(cnae))],
     })) {
+      // Delay entre páginas: cada página = 1 chamada à API CNPJA.
+      // Sem esse delay, múltiplas páginas disparam em sequência e estouram o rate limit.
+      if (pageIndex > 0 && !done) {
+        send({ type: 'progress', saved, total: lim, nome: `⏳ Aguardando limite de requisições (${saved}/${lim} salvos)...` });
+        await sleep(RATE_LIMIT_DELAY_MS);
+      }
+      pageIndex++;
+
       for (const office of page) {
         if (saved >= lim) { done = true; break; } // salvou o suficiente
         try {
@@ -882,9 +944,9 @@ app.post('/api/leads/fetch', async (req, res) => {
             break;
           }
           if (msg.includes('rate limit') || e?.status === 429) {
-            // Aguarda 10s e tenta continuar em vez de abortar
-            send({ type: 'progress', saved, total: lim, nome: '⏳ Rate limit — aguardando 10s...' });
-            await sleep(10000);
+            // Espera a janela de rate limit zerar (1 min + buffer) antes de continuar
+            send({ type: 'progress', saved, total: lim, nome: `⏳ Rate limit atingido — aguardando ${RATE_LIMIT_RECOVERY_MS / 1000}s...` });
+            await sleep(RATE_LIMIT_RECOVERY_MS);
           } else {
             skipped++;
           }
@@ -895,7 +957,7 @@ app.post('/api/leads/fetch', async (req, res) => {
   } catch (e) {
     const msg = (e?.message ?? '').toLowerCase();
     if (msg.includes('rate limit') || e?.status === 429) {
-      send({ type: 'error', message: `Rate limit atingido. Tente novamente em alguns segundos.` });
+      send({ type: 'error', message: `Rate limit CNPJA atingido. Aguarde ~1 minuto e tente novamente, ou use uma chave diferente.` });
     } else {
       send({ type: 'error', message: e.message });
     }
@@ -911,6 +973,106 @@ app.post('/api/leads/fetch', async (req, res) => {
   }
 
   send({ type: 'done', saved, skipped, credits: updatedCredits, totalCredits });
+  res.end();
+});
+
+// ─── POST /api/leads/fetch-maps ───────────────────────────────────────────────
+// Busca empresas no Google Maps via Apify e salva no pool. SSE para progresso.
+// Body: { segmentoLabel, estado, cidade, bairro?, limite }
+app.post('/api/leads/fetch-maps', async (req, res) => {
+  const { segmentoLabel, estado, cidade, bairro, limite = 20 } = req.body;
+
+  if (!segmentoLabel || !estado || !cidade) {
+    return res.status(400).json({ error: 'segmentoLabel, estado e cidade são obrigatórios' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  const token = APIFY_TOKEN;
+  if (!token) {
+    send({ type: 'error', message: 'APIFY_TOKEN não configurado no servidor. Adicione no EasyPanel.' });
+    return res.end();
+  }
+
+  // num mínimo 10 (limitação do actor), máximo 200
+  const lim = Math.max(10, Math.min(200, parseInt(String(limite))));
+
+  // Monta query de busca: "Restaurante em Campinas, SP, Barão Geraldo"
+  const locationParts = [cidade, estado];
+  if (bairro?.trim()) locationParts.splice(1, 0, bairro.trim());
+  const query = `${segmentoLabel} em ${locationParts.join(', ')}`;
+
+  send({ type: 'start', message: `Buscando "${query}" no Google Maps...` });
+
+  try {
+    // Inicia a run no Apify (waitForFinish=60 aguarda até 60s server-side)
+    const runRes = await fetch(
+      `https://api.apify.com/v2/actors/${APIFY_ACTOR}/runs?token=${token}&waitForFinish=60&maxItems=${lim}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: [query], num: lim, gl: 'br', hl: 'pt' }),
+      }
+    );
+
+    const runJson = await runRes.json();
+
+    if (!runRes.ok) {
+      send({ type: 'error', message: runJson.error?.message ?? 'Erro ao iniciar busca no Apify.' });
+      return res.end();
+    }
+
+    let { status, id: runId, defaultDatasetId } = runJson.data;
+    send({ type: 'progress', saved: 0, total: lim, nome: `Run iniciada — aguardando resultados...` });
+
+    // Polling enquanto a run não terminar (máx 5 min)
+    let polls = 0;
+    while (status !== 'SUCCEEDED' && status !== 'FAILED' && status !== 'ABORTED' && polls < 60) {
+      await sleep(5000);
+      polls++;
+      const pollRes = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${token}`);
+      const pollJson = await pollRes.json();
+      status = pollJson.data?.status ?? status;
+      send({ type: 'progress', saved: 0, total: lim, nome: `Coletando do Google Maps... (${status})` });
+    }
+
+    if (status !== 'SUCCEEDED') {
+      send({ type: 'error', message: `Busca encerrou com status inesperado: ${status}` });
+      return res.end();
+    }
+
+    // Busca os itens do dataset
+    const dsRes = await fetch(
+      `https://api.apify.com/v2/datasets/${defaultDatasetId}/items?token=${token}&limit=${lim}`
+    );
+    const items = await dsRes.json();
+
+    let saved = 0;
+    let skipped = 0;
+    for (const item of items) {
+      try {
+        const ok = await saveMapLead(item, segmentoLabel);
+        if (ok) {
+          saved++;
+          send({ type: 'progress', saved, total: items.length, nome: item.title ?? '' });
+        } else {
+          skipped++;
+        }
+      } catch (e) {
+        console.error('[fetch-maps] erro ao salvar item:', e.message);
+        skipped++;
+      }
+    }
+
+    send({ type: 'done', saved, skipped });
+  } catch (e) {
+    send({ type: 'error', message: e.message });
+  }
+
   res.end();
 });
 

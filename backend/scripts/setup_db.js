@@ -39,7 +39,7 @@ const SQL = {
   pool: `
     CREATE TABLE IF NOT EXISTS blitzar_leads_pool (
       id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      cnpj                  VARCHAR(14) NOT NULL UNIQUE,
+      cnpj                  VARCHAR(14),          -- nullable: leads Google Maps não têm CNPJ
       razao_social          TEXT,
       nome_fantasia         TEXT,
       data_abertura         DATE,
@@ -115,6 +115,8 @@ async function main() {
   await db.query('CREATE INDEX IF NOT EXISTS idx_pool_cnae     ON blitzar_leads_pool(cnae_principal_codigo)');
   await db.query('CREATE INDEX IF NOT EXISTS idx_pool_cidade   ON blitzar_leads_pool(cidade, estado)');
   await db.query('CREATE INDEX IF NOT EXISTS idx_pool_segmento ON blitzar_leads_pool(segmento)');
+  // Índice parcial: deduplicação por CNPJ apenas quando não-nulo (leads Google Maps têm cnpj=NULL)
+  await db.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_cnpj ON blitzar_leads_pool(cnpj) WHERE cnpj IS NOT NULL');
   console.log('✅ blitzar_leads_pool OK');
 
   // 2. Migrar dados existentes para o pool (schema antigo pode divergir — skip se falhar)
