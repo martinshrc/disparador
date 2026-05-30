@@ -4,7 +4,7 @@ import {
   ArrowLeft, Search, RefreshCw, Building2,
   Phone, Mail, MapPin, Zap, Database, ChevronLeft, ChevronRight,
   SendHorizontal, ChevronsUpDown, Check, ListChecks, KeyRound, Plus, Trash2,
-  Map,
+  Map as MapIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -451,7 +451,7 @@ export default function ColetarLeads() {
                 Receita Federal — CNPJA
               </TabsTrigger>
               <TabsTrigger value="maps" className="gap-2">
-                <Map className="h-3.5 w-3.5" />
+                <MapIcon className="h-3.5 w-3.5" />
                 Google Maps — Apify
               </TabsTrigger>
             </TabsList>
@@ -638,7 +638,7 @@ export default function ColetarLeads() {
 
                 <div className="flex items-end">
                   <Button onClick={handleFetchMaps} disabled={isFetching} className="gap-2">
-                    {isFetching ? <><RefreshCw className="h-4 w-4 animate-spin" /> Buscando...</> : <><Map className="h-4 w-4" /> Buscar</>}
+                    {isFetching ? <><RefreshCw className="h-4 w-4 animate-spin" /> Buscando...</> : <><MapIcon className="h-4 w-4" /> Buscar</>}
                   </Button>
                 </div>
               </div>
