@@ -11,7 +11,7 @@ const POLL_INTERVAL_MS = 5000; // 5 segundos
 export interface BatchContact {
   empresa:      string;
   telefone:     string;
-  mensagem:     string;   // mensagem já variada pela IA (gerada no frontend)
+  mensagem?:    string;   // opcional — se omitido, o backend gera via IA (1 template por 10 contatos)
   intervalo_ms: number;   // intervalo após este envio, em ms
 }
 
@@ -95,14 +95,18 @@ export function useDisparoSession() {
   }, [activeSession?.status, startPolling]);
 
   /**
-   * Envia o batch de contatos (com mensagens já geradas) para o backend.
+   * Envia o batch de contatos para o backend iniciar a sessão de disparo.
    * O backend persiste e processa independente do browser.
+   *
+   * @param llmConfig - Config de IA do usuário. Quando fornecida e os contatos não trazem
+   *   mensagem pré-gerada, o backend gera templates automaticamente (1 por 10 contatos).
    * @returns session_id ou null em caso de erro
    */
   const startSession = useCallback(async (
     contacts:     BatchContact[],
     instanceName: string,
     mensagemBase: string,
+    llmConfig?:   { provider: string; apiKey: string | null; model: string } | null,
   ): Promise<string | null> => {
     if (!user?.id || !BACKEND_URL) return null;
 
@@ -115,6 +119,7 @@ export function useDisparoSession() {
           user_id:       user.id,
           instance_name: instanceName,
           mensagem_base: mensagemBase,
+          llm_config:    llmConfig ?? null,
           contacts,
         }),
       });

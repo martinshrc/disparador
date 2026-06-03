@@ -449,6 +449,98 @@ async function saveMapLead(item, segmentoLabel) {
 const activeSessions = new Map(); // sessionId (string) → { aborted: boolean }
 
 /**
+ * Gera N variações da mensagem base usando Gemini ou OpenAI em uma única chamada de API.
+ * Retorna array de strings; em caso de falha usa mensagemBase como fallback para todas.
+ *
+ * @param {string} mensagemBase  - Mensagem original do usuário
+ * @param {number} count         - Total de contatos; gera ceil(count/10) templates
+ * @param {{ provider, apiKey, model }} llmConfig - Config de IA do usuário
+ * @returns {Promise<string[]>}
+ */
+async function generateTemplates(mensagemBase, count, llmConfig) {
+  const qty = Math.max(1, Math.ceil(count / 10));
+  const { provider, apiKey, model } = llmConfig || {};
+
+  if (!apiKey?.trim()) {
+    console.log('[templates] Sem apiKey — usando mensagemBase como template único.');
+    return Array(qty).fill(mensagemBase);
+  }
+
+  const prompt = `Você é especialista em prospecção B2B via WhatsApp.
+
+Crie exatamente ${qty} variação(ões) da mensagem abaixo, cada uma com abordagem e estrutura COMPLETAMENTE DIFERENTES.
+
+Regras obrigatórias:
+- Varie o gancho: curiosidade, dado de mercado, pergunta direta, elogio, contexto do setor, etc.
+- Máximo 1-2 frases CURTAS, tom informal e direto (estilo WhatsApp) — nada longo
+- Pode usar {empresa} onde quiser mencionar a empresa (será substituído automaticamente pelo nome real)
+- Retorne APENAS as variações, separadas por uma linha contendo somente "---"
+- Sem numeração, prefixos, aspas ou explicações
+
+Mensagem base:
+${mensagemBase}`;
+
+  try {
+    let text = '';
+
+    if (provider === 'openai') {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey.trim()}` },
+        body: JSON.stringify({
+          model: model || 'gpt-4o-mini',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 1.2,
+        }),
+        signal: AbortSignal.timeout ? AbortSignal.timeout(30000) : undefined,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || `OpenAI HTTP ${res.status}`);
+      text = data.choices?.[0]?.message?.content?.trim() || '';
+    } else {
+      // Gemini (padrão)
+      const gemModel = model || 'gemini-2.5-flash';
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${gemModel}:generateContent?key=${apiKey.trim()}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 1.4 },
+          }),
+          signal: AbortSignal.timeout ? AbortSignal.timeout(30000) : undefined,
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || `Gemini HTTP ${res.status}`);
+      text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    }
+
+    if (!text) {
+      console.warn('[templates] API retornou texto vazio — usando fallback.');
+      return Array(qty).fill(mensagemBase);
+    }
+
+    // Separa as variações pelo delimitador "---"
+    const parts = text
+      .split(/\n---\n|^---$/m)
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    if (!parts.length) return Array(qty).fill(mensagemBase);
+
+    // Garante exatamente qty templates (cicla se a IA retornou menos)
+    const templates = Array.from({ length: qty }, (_, i) => parts[i % parts.length]);
+    console.log(`[templates] ${templates.length} template(s) gerado(s) para ${count} contato(s) via ${provider || 'gemini'}.`);
+    return templates;
+  } catch (err) {
+    console.warn('[templates] Falha ao gerar templates — usando mensagemBase como fallback:', err.message);
+    return Array(qty).fill(mensagemBase);
+  }
+}
+
+/**
  * Processa uma sessão de disparo de forma assíncrona (não-bloqueante).
  * Chamado no POST /start e no startup (recovery de sessões interrompidas).
  */
@@ -1079,11 +1171,16 @@ app.post('/api/leads/fetch-maps', async (req, res) => {
 // ─── POST /api/disparo/start ──────────────────────────────────────────────────
 /**
  * Inicia um batch de disparo persistente.
- * Body: { user_id, instance_name, mensagem_base, contacts: [{empresa, telefone, mensagem, intervalo_ms}] }
- * Resposta: { session_id, total }
+ * Body: {
+ *   user_id, instance_name, mensagem_base,
+ *   llm_config?: { provider, apiKey, model },   ← novo: geração de templates no backend
+ *   contacts: [{ empresa, telefone, mensagem?, intervalo_ms }]
+ *     mensagem é opcional — se ausente, o backend gera templates via IA (1 por 10 contatos)
+ * }
+ * Resposta: { session_id, total, templates_generated? }
  */
 app.post('/api/disparo/start', async (req, res) => {
-  const { user_id, instance_name, mensagem_base, contacts } = req.body;
+  const { user_id, instance_name, mensagem_base, contacts, llm_config } = req.body;
 
   if (!user_id || !instance_name || !Array.isArray(contacts) || contacts.length === 0) {
     return res.status(400).json({
@@ -1156,6 +1253,29 @@ app.post('/api/disparo/start', async (req, res) => {
 
   const preErrorCount = processedContacts.filter(c => c._phoneInvalid).length;
 
+  // ── Geração de templates via IA (quando o frontend não enviou mensagens pré-geradas) ──
+  // Verifica se ALGUM contato válido está sem mensagem
+  const validContacts     = processedContacts.filter(c => !c._phoneInvalid);
+  const needsGeneration   = validContacts.some(c => !c.mensagem?.trim());
+  let   templates         = null;
+  let   templatesGenerated = false;
+
+  if (needsGeneration && validContacts.length > 0) {
+    templates = await generateTemplates(mensagem_base, validContacts.length, llm_config);
+    templatesGenerated = true;
+
+    // Atribui templates round-robin e substitui {empresa} pelo nome real de cada contato
+    let templateIdx = 0;
+    for (const c of processedContacts) {
+      if (c._phoneInvalid) continue;
+      if (!c.mensagem?.trim()) {
+        const tpl = templates[templateIdx % templates.length];
+        c.mensagem = tpl.replace(/\{empresa\}/gi, String(c.empresa || ''));
+        templateIdx++;
+      }
+    }
+  }
+
   // Cria nova sessão
   const { rows: [session] } = await db.query(
     `INSERT INTO disparo_sessions (user_id, instance_name, mensagem_base, total)
@@ -1206,8 +1326,9 @@ app.post('/api/disparo/start', async (req, res) => {
   // Inicia processamento assíncrono (não bloqueia a resposta HTTP)
   processDisparoSession(session.id, instance_name).catch(console.error);
 
-  console.log(`[disparo] Sessão ${session.id} iniciada: ${contacts.length} contatos (${preErrorCount} inválidos), instância ${instance_name}`);
-  res.json({ session_id: session.id, total: contacts.length });
+  const tplInfo = templatesGenerated ? ` | ${templates.length} template(s) gerado(s)` : '';
+  console.log(`[disparo] Sessão ${session.id} iniciada: ${contacts.length} contatos (${preErrorCount} inválidos), instância ${instance_name}${tplInfo}`);
+  res.json({ session_id: session.id, total: contacts.length, templates_generated: templatesGenerated });
 });
 
 // ─── GET /api/disparo/active ──────────────────────────────────────────────────

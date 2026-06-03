@@ -14,7 +14,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { ContactRow } from '@/types/dispatcher';
 import { type FilterType, FILTER_LABELS } from '@/components/ContactsTable';
 import { cn } from '@/lib/utils';
-import { generateAIMessage, getRandomDelay, DISPATCH_DELAY_MIN_LIMIT, DISPATCH_DELAY_MAX_LIMIT } from '@/lib/api';
+import { getRandomDelay, DISPATCH_DELAY_MIN_LIMIT, DISPATCH_DELAY_MAX_LIMIT } from '@/lib/api';
 import { normalizePhone } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/useAuth';
@@ -44,11 +44,6 @@ export function Dashboard() {
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [countdown, setCountdown] = useState(0);
   const [maxCountdown, setMaxCountdown] = useState(0);
-  /** Fase 1 do novo fluxo: geração de mensagens IA antes de enviar ao backend */
-  const [isGenerating, setIsGenerating]     = useState(false);
-  const [generateProgress, setGenerateProgress] = useState(0);
-  const [generateTotal, setGenerateTotal]   = useState(0);
-  const abortGenerateRef = useRef(false);
   /** Ref para acessar contacts dentro de effects sem adicioná-los às deps.
    *  Atualizado inline durante o render (antes de qualquer effect rodar). */
   const contactsRef = useRef<ContactRow[]>([]);
@@ -215,7 +210,7 @@ export function Dashboard() {
   const progress      = contacts.length > 0 ? (totalEnviados + totalErros) / contacts.length * 100 : 0;
 
   /** Disparo está bloqueado se há sessão rodando no backend ou se está gerando mensagens */
-  const isRunning = isGenerating || isStarting || activeSession?.status === 'running';
+  const isRunning = isStarting || activeSession?.status === 'running';
 
   /** Aplica o filtro de disparo ativo sobre um array de contatos */
   const applyDispatchFilter = useCallback((rows: ContactRow[]) => {
@@ -258,34 +253,13 @@ export function Dashboard() {
     }
   }, [contactsLoading, savedContacts, contacts.length]);
 
-  // Aviso ao fechar aba apenas durante a fase de geração de IA (lado cliente).
-  // Após o batch estar no backend, fechar o browser é seguro — o servidor continua.
-  useEffect(() => {
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (isGenerating) {
-        e.preventDefault();
-        e.returnValue = 'Ainda gerando mensagens com IA. Aguarde ou as mensagens serão perdidas.';
-        return e.returnValue;
-      }
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isGenerating]);
   const updateContact = useCallback((id: string, updates: Partial<ContactRow>) => {
     setContacts(prev => prev.map(c => c.id === id ? { ...c, ...updates } : c));
   }, []);
 
   /**
-   * Novo fluxo de disparo em 2 fases:
-   *
-   * Fase 1 — Geração de IA (client-side, usa chave do usuário):
-   *   Gera variações de mensagem para todos os contatos pendentes,
-   *   exibindo progresso "X/N" na tela.
-   *
-   * Fase 2 — Enfileiramento no backend:
-   *   Envia o batch completo para o backend via POST /api/disparo/start.
-   *   O backend persiste a fila e executa independentemente do browser.
-   *   Fechar o site não interrompe os disparos.
+   * Inicia o disparo: envia o batch para o backend que gera os templates via IA
+   * (1 chamada para ceil(N/10) variações) e processa a fila independente do browser.
    */
   const runDispatcher = async () => {
     if (!dispatchInstanceName) {
@@ -296,7 +270,7 @@ export function Dashboard() {
       toast({ title: "Mensagem obrigatória", description: "Digite uma mensagem base antes de iniciar.", variant: "destructive" });
       return;
     }
-    // Aplica os mesmos filtros visíveis na tabela — disparo respeita o filtro ativo
+
     const pendingContacts = applyDispatchFilter(
       contacts.filter(c => c.status === 'pendente' || c.status === 'erro')
     );
@@ -310,49 +284,15 @@ export function Dashboard() {
       return;
     }
 
-    // ── Fase 1: Geração de mensagens IA ──────────────────────────────────────
-    setIsGenerating(true);
-    abortGenerateRef.current = false;
-    setGenerateProgress(0);
-    setGenerateTotal(pendingContacts.length);
+    const batchContacts: BatchContact[] = pendingContacts.map(contact => ({
+      empresa:      contact.empresa,
+      telefone:     contact.telefoneFormatado,
+      // mensagem omitida — backend gera templates via IA
+      intervalo_ms: getRandomDelay(delayMin, delayMax) * 1000,
+    }));
 
-    toast({
-      title: "Gerando mensagens com IA...",
-      description: `Variando mensagem para ${pendingContacts.length} contatos. Aguarde.`,
-    });
-
-    const batchContacts: BatchContact[] = [];
-
-    for (let i = 0; i < pendingContacts.length; i++) {
-      if (abortGenerateRef.current) break;
-
-      const contact = pendingContacts[i];
-      updateContact(contact.id, { status: 'gerando-ia' });
-
-      const aiResult = await generateAIMessage(contact.empresa, mensagemBase, llmConfig ?? null);
-      const mensagem = aiResult.message; // fallback para mensagemBase se IA falhar
-
-      updateContact(contact.id, { mensagemIA: mensagem, status: 'pendente' });
-      setGenerateProgress(i + 1);
-
-      // Intervalo entre mensagens da fila (pré-calculado por contato)
-      const intervalo_ms = getRandomDelay(delayMin, delayMax) * 1000;
-      batchContacts.push({
-        empresa:      contact.empresa,
-        telefone:     contact.telefoneFormatado,
-        mensagem,
-        intervalo_ms,
-      });
-    }
-
-    setIsGenerating(false);
-    setGenerateProgress(0);
-    setGenerateTotal(0);
-
-    if (abortGenerateRef.current || batchContacts.length === 0) return;
-
-    // ── Fase 2: Enfileirar no backend ────────────────────────────────────────
-    const sessionId = await startSession(batchContacts, dispatchInstanceName, mensagemBase);
+    // Enfileira no backend; ele gera os templates com 1 chamada de IA antes de iniciar
+    const sessionId = await startSession(batchContacts, dispatchInstanceName, mensagemBase, llmConfig);
 
     if (!sessionId) {
       toast({
@@ -373,13 +313,7 @@ export function Dashboard() {
   };
 
   const stopDispatcher = () => {
-    if (isGenerating) {
-      // Cancela a fase de geração de IA (ainda no cliente)
-      abortGenerateRef.current = true;
-      setIsGenerating(false);
-      toast({ title: "Geração cancelada", description: "A geração de mensagens foi interrompida." });
-    } else if (activeSession?.status === 'running') {
-      // Cancela a sessão no backend
+    if (activeSession?.status === 'running') {
       cancelSession(activeSession.id);
       toast({ title: "Cancelando disparo...", description: "Sinal enviado ao servidor. Pode levar alguns segundos." });
     }
@@ -783,25 +717,19 @@ export function Dashboard() {
                   <span className="text-muted-foreground text-xs">(entre {DISPATCH_DELAY_MIN_LIMIT} e {DISPATCH_DELAY_MAX_LIMIT}s)</span>
                 </div>
 
-                {/* Progresso de geração de IA (Fase 1) */}
-                {isGenerating && (
+                {/* Enfileirando — aguarda resposta do backend (geração de templates + criação da sessão) */}
+                {isStarting && (
                   <div className="space-y-2">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="flex items-center gap-2 text-muted-foreground">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        Gerando mensagens com IA...
-                      </span>
-                      <span className="font-medium">{generateProgress}/{generateTotal}</span>
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Gerando mensagens e enfileirando...
                     </div>
-                    <Progress
-                      value={generateTotal > 0 ? (generateProgress / generateTotal) * 100 : 0}
-                      className="h-2"
-                    />
+                    <Progress value={undefined} className="h-2 animate-pulse" />
                   </div>
                 )}
 
-                {/* Progresso do disparo no backend (Fase 2) */}
-                {!isGenerating && activeSession?.status === 'running' && (
+                {/* Progresso do disparo no backend */}
+                {!isStarting && activeSession?.status === 'running' && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-sm">
                       <span className="flex items-center gap-2 text-muted-foreground">
@@ -820,8 +748,8 @@ export function Dashboard() {
                   </div>
                 )}
 
-                {/* Progresso local (legado — exibido se não houver sessão ativa) */}
-                {!isGenerating && activeSession?.status !== 'running' && (
+                {/* Sem sessão ativa */}
+                {!isStarting && activeSession?.status !== 'running' && (
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">Progresso</span>
