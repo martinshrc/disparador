@@ -19,6 +19,7 @@ export interface SavedContact {
   telefone: string;
   ultima_mensagem: string | null;
   ultima_mensagem_data: string | null;
+  desativado: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -148,6 +149,20 @@ export function useContacts() {
     await apiClient.patch('/api/contacts/desativar', { user_id: user.id, ids }).catch(() => {});
   };
 
+  // ─── fetchAllContacts — retorna todos (inclusive desativados) ────────────────
+  const fetchAllContacts = useCallback(async (): Promise<SavedContact[]> => {
+    if (!user) return [];
+    const r = await apiClient.get(`/api/contacts?user_id=${encodeURIComponent(user.id)}&all=true`);
+    if (!r.ok) return [];
+    return r.json();
+  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── reativarContacts — remove flag desativado, contato volta à fila ─────────
+  const reativarContacts = async (ids: string[]): Promise<void> => {
+    if (!user || ids.length === 0) return;
+    await apiClient.patch('/api/contacts/reativar', { user_id: user.id, ids });
+  };
+
   // ─── deleteContact ──────────────────────────────────────────────────────────
   const deleteContact = async (id: string): Promise<boolean> => {
     if (!user) return false;
@@ -191,6 +206,8 @@ export function useContacts() {
     updateContactMessage,
     saveContactsFromFile,
     desativarContacts,
+    reativarContacts,
+    fetchAllContacts,
     deleteContact,
     updateContact,
     refreshContacts: fetchContacts,

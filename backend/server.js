@@ -1469,15 +1469,20 @@ async function ensureContactsTable() {
   await db.query(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS desativado BOOLEAN DEFAULT false`);
 }
 
-// GET /api/contacts?user_id=
+// GET /api/contacts?user_id=&all=true
+// all=true → retorna TODOS os contatos (inclusive desativados), com campo `desativado`
+// omitido → comportamento padrão: só contatos ativos (desativado IS NOT TRUE)
 app.get('/api/contacts', async (req, res) => {
-  const { user_id } = req.query;
+  const { user_id, all } = req.query;
   if (!user_id) return res.status(400).json({ error: 'user_id obrigatório' });
+
+  const includeAll = all === 'true';
   const { rows } = await db.query(
-    `SELECT id, user_id, empresa, telefone, ultima_mensagem, ultima_mensagem_data, created_at, updated_at
+    `SELECT id, user_id, empresa, telefone, ultima_mensagem, ultima_mensagem_data,
+            COALESCE(desativado, false) AS desativado, created_at, updated_at
      FROM contacts
-     WHERE user_id = $1 AND desativado IS NOT TRUE
-     ORDER BY created_at DESC`,
+     WHERE user_id = $1 ${includeAll ? '' : 'AND desativado IS NOT TRUE'}
+     ORDER BY desativado ASC, created_at DESC`,
     [user_id]
   );
   res.json(rows);
@@ -1518,6 +1523,22 @@ app.post('/api/contacts/bulk', async (req, res) => {
   );
 
   res.json({ count: deduped.length });
+});
+
+// PATCH /api/contacts/reativar — remove a flag desativado (readiciona à fila de disparo)
+// Body: { user_id, ids: string[] }
+app.patch('/api/contacts/reativar', async (req, res) => {
+  const { user_id, ids } = req.body;
+  if (!user_id || !Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'user_id e ids[] obrigatórios' });
+  }
+  const placeholders = ids.map((_, i) => `$${i + 2}`).join(',');
+  await db.query(
+    `UPDATE contacts SET desativado = false, updated_at = NOW()
+     WHERE user_id = $1 AND id = ANY(ARRAY[${placeholders}]::uuid[])`,
+    [user_id, ...ids]
+  );
+  res.json({ ok: true, count: ids.length });
 });
 
 // PATCH /api/contacts/desativar — marca contatos como desativados (cross-device, substitui localStorage excludedIds)
